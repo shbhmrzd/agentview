@@ -1,0 +1,9 @@
+{
+  "id": "rovo-session-example",
+  "message_history": [
+    {"kind":"request","parts":[{"part_kind":"system-prompt","content":"OMITTED_SYSTEM_PROMPT","timestamp":"2026-11-13T00:00:00Z"},{"part_kind":"user-prompt","content":"Run the synthetic test.","timestamp":"2026-11-13T00:00:01Z"}]},
+    {"kind":"response","timestamp":"2026-11-13T00:00:02Z","parts":[{"part_kind":"thinking","content":"SYNTHETIC_REASONING","signature":"SYNTHETIC_ENCRYPTED"},{"part_kind":"tool-call","tool_name":"bash","tool_call_id":"call-1","args":{"command":"go test ./..."}}]},
+    {"kind":"request","parts":[{"part_kind":"tool-return","tool_name":"bash","tool_call_id":"call-1","outcome":"failed","content":"FAIL synthetic_test","timestamp":"2026-11-13T00:00:03Z"}]},
+    {"kind":"response","timestamp":"2026-11-13T00:00:04Z","parts":[{"part_kind":"text","content":"The synthetic test failed."}]}
+  ]
+}
