@@ -1,0 +1,39 @@
+/bin/
+/coverage.out
+/test-results/
+*.test
+.DS_Store
+
+# Local credentials, state, and native agent artifacts are never source files.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.codex/
+.claude/
+.copilot/
+.rovodev/
+
+# Internal planning, research, and review notes stay local.
+# Put new internal documents under docs/internal/ (see CONTRIBUTING.md).
+/docs/internal/
+/docs/planning/
+/docs/research/
+/docs/reviews/
+/docs/profiles/
+/docs/PRD.md
+/docs/competitive-analysis.md
+/docs/contribution-opportunities.md
+/docs/community-plan.md
+/docs/planning-delivery-review.md
+/docs/implementation-status.md
+/docs/native-integration-design.md
+
+# Common names for internal documents, wherever they are created.
+*[Pp][Rr][Dd]*.md
+*competitor*.md
+*competitive*.md
+*positioning*.md
+*internal*.md
+*planning*.md
