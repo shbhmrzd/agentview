@@ -106,6 +106,11 @@ func startViewer(t *testing.T, agent, path string, includeContent bool, extraArg
 	if includeContent {
 		args = append(args, "--include-content")
 	}
+	return startViewerArgs(t, args...)
+}
+
+func startViewerArgs(t *testing.T, args ...string) *viewer {
+	t.Helper()
 	v := &viewer{cmd: exec.Command(agentviewBinary, args...), events: make(chan event, 128), done: make(chan struct{}), stopRead: make(chan struct{})}
 	var err error
 	v.stderr, err = os.Create(filepath.Join(t.TempDir(), "viewer.stderr"))
@@ -465,7 +470,11 @@ func startFixtureWriter(t *testing.T, filename ...string) *fixtureWriter {
 	if len(filename) != 0 {
 		name = filename[0]
 	}
-	w := &fixtureWriter{path: filepath.Join(t.TempDir(), name), archives: make(map[string][]byte)}
+	path := name
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(t.TempDir(), name)
+	}
+	w := &fixtureWriter{path: path, archives: make(map[string][]byte)}
 	w.cmd = exec.Command(testBinary, "-test.run=^$")
 	w.cmd.Env = append(os.Environ(), "AGENTVIEW_FIXTURE_WRITER=1", "AGENTVIEW_FIXTURE_PATH="+w.path)
 	w.cmd.Stderr = os.Stderr

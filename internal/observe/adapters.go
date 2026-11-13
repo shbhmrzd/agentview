@@ -15,6 +15,8 @@ type AdapterInfo struct {
 }
 
 type Capabilities struct {
+	Usage           string `json:"usage"`
+	Coordination    string `json:"coordination"`
 	History         string `json:"history"`
 	Updates         string `json:"updates"`
 	ToolActivity    string `json:"tool_activity"`
@@ -26,19 +28,28 @@ type Capabilities struct {
 type decoder interface {
 	Decode(Record, Event) []Event
 	Context() (string, string)
+	WorkingDirectory() string
+	DebugContext() AgentContext
 	Reset()
 }
 
 type decoderState struct {
 	includeContent            bool
 	sessionID, groupSessionID string
+	workingDirectory          string
+	debug                     AgentContext
 }
 
 func state(options NormalizerOptions) decoderState {
 	return decoderState{includeContent: options.IncludeContent}
 }
-func (s *decoderState) Reset()                    { s.sessionID, s.groupSessionID = "", "" }
-func (s *decoderState) Context() (string, string) { return s.sessionID, s.groupSessionID }
+func (s *decoderState) Reset() {
+	s.sessionID, s.groupSessionID, s.workingDirectory = "", "", ""
+	s.debug = AgentContext{}
+}
+func (s *decoderState) DebugContext() AgentContext { return s.debug }
+func (s *decoderState) Context() (string, string)  { return s.sessionID, s.groupSessionID }
+func (s *decoderState) WorkingDirectory() string   { return s.workingDirectory }
 
 type registration struct {
 	info             AdapterInfo
@@ -47,9 +58,14 @@ type registration struct {
 }
 
 func jsonlInfo(name string) AdapterInfo {
-	return AdapterInfo{Name: name, Version: "0.1.0", InputFormat: "jsonl", Capabilities: Capabilities{
+	info := AdapterInfo{Name: name, Version: "0.1.0", InputFormat: "jsonl", Capabilities: Capabilities{
 		History: "supported", Updates: "append_polling", ToolActivity: "partial", Subagents: "unavailable", ExecutionState: "unknown", SessionIdentity: "native_when_present",
 	}}
+	info.Capabilities.Usage, info.Capabilities.Coordination = "unavailable", "unavailable"
+	if name == "claude" || name == "codex" {
+		info.Capabilities.Subagents, info.Capabilities.Usage, info.Capabilities.Coordination = "partial", "partial", "recorded_tool_requests"
+	}
+	return info
 }
 
 // Compile-time registry: no dynamic loading or global mutable registration API.
@@ -58,7 +74,7 @@ var adapters = map[string]registration{
 	"codex":   {info: jsonlInfo("codex"), newDecoder: func(o NormalizerOptions) decoder { return &codexDecoder{state(o)} }},
 	"copilot": {info: jsonlInfo("copilot"), newDecoder: func(o NormalizerOptions) decoder { return &copilotDecoder{state(o)} }},
 	"rovo": {info: AdapterInfo{Name: "rovo", Version: "0.1.0", InputFormat: "snapshot", Capabilities: Capabilities{
-		History: "partial", Updates: "replacement_snapshots", ToolActivity: "partial", Subagents: "unavailable", ExecutionState: "unknown", SessionIdentity: "native_when_present",
+		History: "partial", Updates: "replacement_snapshots", ToolActivity: "partial", Subagents: "unavailable", ExecutionState: "unknown", SessionIdentity: "native_when_present", Usage: "unavailable", Coordination: "unavailable",
 	}}, newDecoder: func(o NormalizerOptions) decoder { return &rovoDecoder{state(o)} }, validateSnapshot: validRovo},
 }
 

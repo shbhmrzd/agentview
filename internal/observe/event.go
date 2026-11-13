@@ -10,37 +10,46 @@ import (
 )
 
 type Event struct {
-	SchemaVersion    int     `json:"schema_version"`
-	ID               string  `json:"occurrence_id"`
-	Agent            string  `json:"agent"`
-	AdapterVersion   string  `json:"adapter_version"`
-	Scope            string  `json:"scope"`
-	SessionKey       string  `json:"session_key,omitempty"`
-	SessionID        string  `json:"session_id,omitempty"`
-	GroupSessionID   string  `json:"group_session_id,omitempty"`
-	NativeID         string  `json:"native_id,omitempty"`
-	MessageID        string  `json:"message_id,omitempty"`
-	NativeAgentID    string  `json:"native_agent_id,omitempty"`
-	CheckpointReplay *bool   `json:"checkpoint_replay,omitempty"`
-	ParentID         string  `json:"parent_id,omitempty"`
-	ParentThreadID   string  `json:"parent_thread_id,omitempty"`
-	ForkedFromID     string  `json:"forked_from_id,omitempty"`
-	SourceOrdinal    *uint64 `json:"source_ordinal,omitempty"`
-	TurnID           string  `json:"turn_id,omitempty"`
-	Kind             string  `json:"kind"`
-	NativeType       string  `json:"native_type,omitempty"`
-	ToolCallID       string  `json:"tool_call_id,omitempty"`
-	ToolName         string  `json:"tool_name,omitempty"`
-	IsError          *bool   `json:"is_error,omitempty"`
-	OccurredAt       string  `json:"occurred_at,omitempty"`
-	TimeStatus       string  `json:"time_status"`
-	ObservedAt       string  `json:"observed_at"`
-	Source           Source  `json:"source"`
-	CaptureMode      string  `json:"capture_mode"`
-	ExecutionState   string  `json:"execution_state"`
-	ContentCaptured  bool    `json:"content_captured"`
-	Content          string  `json:"content,omitempty"`
-	Detail           string  `json:"detail,omitempty"`
+	AgentContext     AgentContext  `json:"agent_context,omitempty"`
+	Usage            *TokenUsage   `json:"usage,omitempty"`
+	UsageBasis       string        `json:"usage_basis,omitempty"`
+	UsageID          string        `json:"usage_id,omitempty"`
+	Coordination     *Coordination `json:"coordination,omitempty"`
+	Inherited        bool          `json:"inherited,omitempty"`
+	SchemaVersion    int           `json:"schema_version"`
+	ID               string        `json:"occurrence_id"`
+	Agent            string        `json:"agent"`
+	AdapterVersion   string        `json:"adapter_version"`
+	Scope            string        `json:"scope"`
+	SessionKey       string        `json:"session_key,omitempty"`
+	SessionID        string        `json:"session_id,omitempty"`
+	WorkingDirectory string        `json:"working_directory,omitempty"`
+	SourceModifiedAt string        `json:"source_modified_at,omitempty"`
+	GroupSessionID   string        `json:"group_session_id,omitempty"`
+	NativeID         string        `json:"native_id,omitempty"`
+	MessageID        string        `json:"message_id,omitempty"`
+	NativeAgentID    string        `json:"native_agent_id,omitempty"`
+	CheckpointReplay *bool         `json:"checkpoint_replay,omitempty"`
+	ParentID         string        `json:"parent_id,omitempty"`
+	ParentThreadID   string        `json:"parent_thread_id,omitempty"`
+	ForkedFromID     string        `json:"forked_from_id,omitempty"`
+	SourceOrdinal    *uint64       `json:"source_ordinal,omitempty"`
+	TurnID           string        `json:"turn_id,omitempty"`
+	Kind             string        `json:"kind"`
+	NativeType       string        `json:"native_type,omitempty"`
+	ToolCallID       string        `json:"tool_call_id,omitempty"`
+	ToolName         string        `json:"tool_name,omitempty"`
+	IsError          *bool         `json:"is_error,omitempty"`
+	OccurredAt       string        `json:"occurred_at,omitempty"`
+	TimeStatus       string        `json:"time_status"`
+	ObservedAt       string        `json:"observed_at"`
+	Source           Source        `json:"source"`
+	CaptureMode      string        `json:"capture_mode"`
+	ObservationPhase string        `json:"observation_phase,omitempty"`
+	ExecutionState   string        `json:"execution_state"`
+	ContentCaptured  bool          `json:"content_captured"`
+	Content          string        `json:"content,omitempty"`
+	Detail           string        `json:"detail,omitempty"`
 }
 
 // Normalizer owns attachment context; provider decoders own native semantics.
@@ -90,6 +99,8 @@ func (n *Normalizer) Normalize(r Record, observedAt time.Time) []Event {
 		events = n.decoder.Decode(r, base)
 	}
 	for i := range events {
+		events[i].WorkingDirectory = n.decoder.WorkingDirectory()
+		events[i].AgentContext = n.decoder.DebugContext()
 		if events[i].SessionID != "" {
 			sum := sha256.Sum256([]byte(n.info.Name + "\x00" + n.options.Scope + "\x00" + events[i].SessionID))
 			events[i].SessionKey = hex.EncodeToString(sum[:])

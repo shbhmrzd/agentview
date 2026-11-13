@@ -16,6 +16,12 @@ func (n *codexDecoder) Decode(r Record, base Event) []Event {
 	}
 	base.NativeType, base.SourceOrdinal = row.Type, row.Ordinal
 	setTimestamp(&base, row.Timestamp)
+	if n.sessionID != "" && n.debug.HistoryStartOrdinal != nil && row.Ordinal != nil && *row.Ordinal < *n.debug.HistoryStartOrdinal {
+		base = ignored(base)
+		base.Inherited = true
+		base.Detail = "Inherited parent context precedes this subagent's recorded history boundary; omitted from agent activity."
+		return []Event{base}
+	}
 	return n.payload(base, row.Type, row.Payload)
 }
 
@@ -24,6 +30,7 @@ func (n *codexDecoder) payload(base Event, typ string, raw json.RawMessage) []Ev
 		Type           string          `json:"type"`
 		ID             string          `json:"id"`
 		SessionID      string          `json:"session_id"`
+		Cwd            string          `json:"cwd"`
 		ParentThreadID string          `json:"parent_thread_id"`
 		ForkedFromID   string          `json:"forked_from_id"`
 		TurnID         string          `json:"turn_id"`
@@ -32,6 +39,20 @@ func (n *codexDecoder) payload(base Event, typ string, raw json.RawMessage) []Ev
 		Arguments      json.RawMessage `json:"arguments"`
 		Input          json.RawMessage `json:"input"`
 		Output         json.RawMessage `json:"output"`
+		Source         json.RawMessage `json:"source"`
+		AgentNickname  string          `json:"agent_nickname"`
+		AgentRole      string          `json:"agent_role"`
+		AgentPath      string          `json:"agent_path"`
+		Model          string          `json:"model"`
+		Effort         string          `json:"effort"`
+		ResponseID     string          `json:"response_id"`
+		ThreadID       string          `json:"thread_id"`
+		HistoryStart   *uint64         `json:"subagent_history_start_ordinal"`
+		ThreadUsage    *TokenUsage     `json:"thread_token_usage"`
+		Info           *struct {
+			Total         *TokenUsage `json:"total_token_usage"`
+			ContextWindow *int64      `json:"model_context_window"`
+		} `json:"info"`
 	}
 	if len(raw) == 0 || json.Unmarshal(raw, &payload) != nil {
 		return []Event{invalid(base)}
@@ -44,7 +65,44 @@ func (n *codexDecoder) payload(base Event, typ string, raw json.RawMessage) []Ev
 		if payload.ID == "" {
 			return []Event{invalid(base)}
 		}
+		// The first metadata record owns this source generation. Forked native
+		// transcripts can later replay parent metadata; it must not replace the
+		// child's identity, ancestry, or configuration.
+		if n.sessionID != "" {
+			base = ignored(base)
+			base.Detail = "Additional session metadata omitted; source owner identity is retained."
+			return []Event{base}
+		}
 		n.sessionID, n.groupSessionID = payload.ID, payload.SessionID
+		n.debug.HistoryStartOrdinal = payload.HistoryStart
+		n.workingDirectory = payload.Cwd
+		n.debug.ParentThreadID, n.debug.ForkedFromID = payload.ParentThreadID, payload.ForkedFromID
+		n.debug.Name, n.debug.Role, n.debug.AgentPath = payload.AgentNickname, payload.AgentRole, payload.AgentPath
+		var source struct {
+			Subagent struct {
+				ThreadSpawn struct {
+					Parent string `json:"parent_thread_id"`
+					Name   string `json:"agent_nickname"`
+					Role   string `json:"agent_role"`
+					Path   string `json:"agent_path"`
+				} `json:"thread_spawn"`
+			} `json:"subagent"`
+		}
+		if json.Unmarshal(payload.Source, &source) == nil {
+			spawn := source.Subagent.ThreadSpawn
+			if n.debug.ParentThreadID == "" {
+				n.debug.ParentThreadID = spawn.Parent
+			}
+			if n.debug.Name == "" {
+				n.debug.Name = spawn.Name
+			}
+			if n.debug.Role == "" {
+				n.debug.Role = spawn.Role
+			}
+			if n.debug.AgentPath == "" {
+				n.debug.AgentPath = spawn.Path
+			}
+		}
 		base.SessionID, base.GroupSessionID = n.sessionID, n.groupSessionID
 		base.ParentThreadID, base.ForkedFromID = payload.ParentThreadID, payload.ForkedFromID
 		base.Kind = "session.metadata"
@@ -56,8 +114,10 @@ func (n *codexDecoder) payload(base Event, typ string, raw json.RawMessage) []Ev
 			base.Kind = "tool.requested"
 			base.ToolCallID, base.ToolName = payload.CallID, payload.Name
 			if payload.Type == "function_call" {
+				base.Coordination = coordination(payload.Name, rawText(payload.Arguments))
 				n.content(&base, rawText(payload.Arguments))
 			} else {
+				base.Coordination = coordination(payload.Name, rawText(payload.Input))
 				n.content(&base, rawText(payload.Input))
 			}
 		case "function_call_output", "custom_tool_call_output":
@@ -71,6 +131,14 @@ func (n *codexDecoder) payload(base Event, typ string, raw json.RawMessage) []Ev
 		}
 	case "event_msg":
 		switch payload.Type {
+		case "token_count":
+			if payload.Info == nil || !payload.Info.Total.valid() {
+				return []Event{ignored(base)}
+			}
+			n.debug.ContextWindow = payload.Info.ContextWindow
+			base.Kind, base.Usage, base.UsageBasis = "usage.snapshot", payload.Info.Total, "codex_token_count"
+		case "item_completed", "item_started":
+			base = ignored(base)
 		case "task_started", "turn_started":
 			base.Kind = "turn.started"
 		case "task_complete", "turn_complete":
@@ -85,7 +153,16 @@ func (n *codexDecoder) payload(base Event, typ string, raw json.RawMessage) []Ev
 			base = unsupported(base)
 		}
 	case "turn_context":
-		base = ignored(base)
+		n.debug.Model, n.debug.Effort = payload.Model, payload.Effort
+		base.Kind = "session.context"
+	case "token_usage_record":
+		if payload.ThreadID != "" && payload.ThreadID != n.sessionID {
+			return []Event{ignored(base)}
+		}
+		if !payload.ThreadUsage.valid() {
+			return []Event{ignored(base)}
+		}
+		base.Kind, base.Usage, base.UsageBasis, base.UsageID = "usage.snapshot", payload.ThreadUsage, "codex_thread_cumulative", payload.ResponseID
 	default:
 		base = unsupported(base)
 	}

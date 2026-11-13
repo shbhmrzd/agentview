@@ -63,6 +63,7 @@ func (n *decoderState) message(base Event, raw json.RawMessage, role string) []E
 		case "tool_use":
 			e.Kind = "tool.requested"
 			e.ToolCallID, e.ToolName = block.ID, block.Name
+			e.Coordination = coordination(block.Name, rawText(block.Input))
 			n.content(&e, rawText(block.Input))
 		case "tool_result":
 			e.Kind = "tool.result"

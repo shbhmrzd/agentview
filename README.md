@@ -1,12 +1,41 @@
 # AgentView
 
-A Go experiment for inspecting existing agent session records through provider adapters, with explicit source provenance and uncertainty. It reads a selected file and does not launch, resume, interrupt, or configure agents.
+A Go experiment for inspecting existing agent session records through provider adapters, with explicit source provenance and uncertainty. It reads a selected file or discovers files beneath an explicitly selected session directory. It does not launch, resume, interrupt, or configure agents.
 
-**Status: CLI prototype.** AgentView inspects and follows explicitly selected session files. Automatic discovery, a dashboard, search, and persistent history are not implemented.
+**Status: local browser preview.** Browse Claude Code and Codex sessions, navigate recorded agent relationships, inspect history or live activity, and examine available token and tool metrics. CLI inspection also supports experimental Copilot and Rovo adapters. There is no durable history or agent-control API.
+
+## Open the dashboard
+
+```sh
+make build
+./bin/agentview serve --include-content
+```
+
+Open the complete local URL printed in the terminal. It contains a per-launch access token. The dashboard discovers `${CODEX_HOME:-$HOME/.codex}/sessions` and `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects`. New sessions appear automatically.
+
+Choose **New activity (2 min)** to find sessions with newly observed messages, tools, or turn events. A skippable first-visit tour explains the navigation; **Take a tour** reopens it later.
+
+**Conversations** shows one row per main conversation and its related child sources, with request excerpts as titles when content is enabled. Child activity updates that conversation; separate chats in the same project stay separate. Use **List view → All sources** for individual files.
+
+**Agent tree** groups recorded parent/child relationships with request and reply excerpts. **Payload guide** opens an interactive sample call/result. Use **Theme** in the top bar to switch between light and dark; your browser remembers the choice.
+
+- Select a session, then an agent in its recorded family.
+- **History** reads a bounded snapshot; **Live activity** follows newly observed records.
+- **Metrics** shows available model, usage, tool counts, explicit error flags, and paired timestamp gaps.
+- Filter messages, tools, coordination requests, or turns; expand payloads and record provenance when needed.
+- Search projects/session IDs, switch providers, or choose **All history** for older sources.
+
+Use `--agent codex` or `--agent claude` to select one provider. For a custom root:
+
+```sh
+./bin/agentview serve --agent codex --dir /absolute/path/to/sessions --include-content
+```
+
+Without `--include-content`, the dashboard shows metadata only. Ctrl-C stops the local observer and leaves agents alone. File activity is not proof of a running process. Accuracy and billing cost stay unavailable without appropriate evidence. See the [dashboard guide](docs/dashboard.md) for metric semantics, privacy, limits, and coverage.
 
 ## Run the experiment
 
-Use Go on macOS or Linux. The code uses Go 1.22 language features; local validation uses the installed Go 1.22.12 toolchain. That old toolchain is not a public-release support recommendation: supported-Go validation is a release gate. There are no third-party dependencies in this experiment.
+Use Go on macOS or Linux. The module requires Go 1.24+ and selects Go 1.26.10 with Go’s automatic toolchain management. The older Go 1.22 linker can produce binaries rejected by recent macOS versions. Runtime code uses the Go standard library and embedded HTML/CSS/JavaScript; no frontend build or third-party runtime dependencies are needed. Node.js 20+ is required only for browser view-model tests.
 
 ```sh
 go build -o bin/agentview ./cmd/agentview
@@ -17,7 +46,7 @@ go build -o bin/agentview ./cmd/agentview
 ./bin/agentview adapters
 ```
 
-All demo inputs are [original synthetic fixtures](testdata/README.md). No agent is started and no model is called. The output is JSONL metadata; prompts, responses, and tool payloads are omitted by default.
+All demo inputs are [original synthetic fixtures](testdata/README.md). No agent is started and no model is called. Terminals show compact text; pipes and redirected files receive JSONL. Choose explicitly with `--format text` or `--format jsonl`. Prompts, responses, and tool payloads are omitted by default.
 
 | Adapter | Selected input | Validation level |
 |---|---|---|
@@ -37,17 +66,37 @@ To inspect a real source, explicitly supply its path:
 
 Add `--include-content` only when you want user-facing transcript text and tool arguments/results in the output. Recognized reasoning/thinking records remain omitted. Opting in is **not redaction**; output may contain sensitive data. Redirected output is your own copy and is not managed by AgentView. No history is persisted by AgentView yet.
 
+## Follow a session directory
+
+```sh
+./bin/agentview follow --agent codex \
+  --dir "${CODEX_HOME:-$HOME/.codex}/sessions" \
+  --history none --include-content --format text --poll 500ms
+
+./bin/agentview follow --agent claude \
+  --dir "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects" \
+  --history none --include-content --format text --poll 500ms
+```
+
+Leave the observer running and continue an existing session or start another in the selected directory. New nested directories and files are discovered automatically. `--history none` is the directory-follow default: existing messages are read to initialize decoder context but are not displayed. Records completed after each file's startup boundary are displayed. Newly discovered files are read from the beginning, including records written before their first discovery. This is discovery of persisted sources, not proof that a native process is running.
+
+Use `--history all` to include existing messages and continue following. Use `inspect --agent codex --dir PATH` to reprocess a fixed discovered set once and exit. `--file` and `--dir` are mutually exclusive; directory mode currently supports Claude and Codex only.
+
+Text output summarizes initialization, hides intentionally ignored reasoning/duplicate records, and reports each unsupported native type once. Long content is truncated for terminal readability. Use `--format jsonl` for the full event stream and every diagnostic. Startup `source.ready` events mean the reader caught up, not that an agent is active. `record.oversized` means a record exceeded the configured byte limit; the source file is untouched.
+
+**Directory observation is an ephemeral developer preview.** Restarting establishes fresh startup boundaries: there is no saved cursor or automatic catch-up for downtime. Use history mode or inspection when those records matter. Discovery limits, filtering, event phases, and recovery behavior are documented in the [directory guide](docs/directory-observation.md).
+
 ## Command behavior
 
 `inspect` reads through the byte size at the first successful open. It reports an incomplete final line without parsing it and exits. It does not chase appends past that boundary. A detected source replacement or rewrite during inspection fails the command; use a stable copy if needed. This is a bounded inspection, not an atomic filesystem snapshot.
 
-`follow` reads existing history and then checks for appends every second. Use `--poll 500ms` to change the interval (minimum 100 ms). Ctrl-C stops AgentView only. On termination, the CLI attempts graceful cancellation and uses a 500 ms fallback to exit its own process if output is blocked. Pending output can be dropped and the final JSONL line can be partial; there is no durable store yet. After the first successful read, missing/inaccessible sources produce a diagnostic and are retried. On detected replacement, truncation, or rewrite, the reader reports a new generation and starts from the beginning; repeated or missing history is possible and explicitly reported.
+With `--file`, `follow` reads existing history and then checks for appends every second. Use `--poll 500ms` to change the interval (minimum 100 ms). Ctrl-C stops AgentView only. On termination, the CLI attempts graceful cancellation and uses a 500 ms fallback to exit its own process if output is blocked. Pending output can be dropped and the final JSONL line can be partial; there is no durable store yet. After the first successful read, missing/inaccessible sources produce a diagnostic and are retried. On detected replacement, truncation, or rewrite, the reader reports a new generation and starts from the beginning; repeated or missing history is possible and explicitly reported.
 
 Rovo uses replacement snapshots rather than appended records. `follow --agent rovo` reads a bounded complete JSON document and emits a `snapshot.updated` boundary followed by its current contents. Replace the prior snapshot projection; do not append those contents as new execution. Every event carries `capture_mode: snapshot_observation` and a source revision; part positions are revision-local indices, not byte offsets or invented native message IDs. Identical bytes are suppressed even after inode replacement. Invalid JSON or unsupported known shapes retain the last accepted revision. A revision change may represent pruning or an empty history, not new activity.
 
 **Rovo snapshot coverage is limited to the first 254 parts, including ignored system/thinking parts**, followed by an omission diagnostic if more exist. Long histories may omit their newest messages. The byte limit applies to the entire snapshot; both file formats default to 1 MiB. The reader checks file identity/size/modification time around a snapshot read; this is not a transactional filesystem snapshot or a guarantee to observe every intermediate save.
 
-Input is limited to regular files. Final-component symlinks are rejected; trusted ancestor directory symlinks can resolve normally. Sources are opened read-only and without blocking on a FIFO. Maximum record size defaults to 1 MiB; `--max-record-bytes` accepts 1 byte through 16 MiB. Oversized input is discarded until its newline with a diagnostic. Each batch reads at most 4 MiB and returns at most 1,024 records. At most 255 message blocks per record are projected, followed by an explicit omission diagnostic if needed.
+Input is limited to regular files. Final-component symlinks are rejected; trusted ancestor directory symlinks can resolve normally. Sources are opened read-only and without blocking on a FIFO. Maximum record size defaults to 1 MiB; `--max-record-bytes` accepts 1 byte through 16 MiB. Oversized input is discarded until its newline with a diagnostic. Single-file batches read at most 4 MiB and return at most 1,024 records. Directory batches use the greater of 4 MiB and the configured record limit plus one byte, retaining the same record-count bound. At most 255 message blocks per record are projected, followed by an explicit omission diagnostic if needed.
 
 Exit codes: 0 means the inspection completed or following was cancelled; 1 means an I/O failure; 2 means invalid arguments. A zero exit code does not mean all records were understood: inspect `record.invalid`, `record.unsupported`, `record.oversized`, and other diagnostic events.
 
@@ -64,7 +113,7 @@ Exit codes: 0 means the inspection completed or following was cancelled; 1 means
 - Copilot preserves `checkpoint_replay` and `native_agent_id` when supplied. These are source facts; a subagent tree and current execution state are not inferred from them.
 - Content-free diagnostics describe malformed, unsupported, skipped, and changing input without printing raw record contents.
 
-The timeline follows physical record order. Reconstructing compacted/branched conversations, tool-pair durations, current approval state, native subagent lineage, search, a web UI, SQLite history, persistent checkpoints, retention, and managed exports are future work. Native smoke tests have exercised newly created Claude Code 2.1.316 and Codex CLI 0.149.0 JSONL sessions. Those checks covered a seed response and a second response after resuming the same disposable session while AgentView followed its file; they do not establish compatibility with other versions or storage formats. Some Codex histories use other storage formats and are not covered by this JSONL reader.
+Each source follows physical record order; directory output interleaves sources without claiming a global causal order. Reconstructing compacted/branched conversations, current approval state, complete native subagent lineage, SQLite history, persistent checkpoints, configurable retention, and managed exports are future work. The browser provides source-level search, partial recorded relationships, paired tool timing, and available usage counters. Native smoke tests have exercised newly created Claude Code 2.1.316 and Codex CLI 0.149.0 JSONL sessions. Those checks covered a seed response and a second response after resuming the same disposable session while AgentView followed its file; they do not establish compatibility with other versions or storage formats. Some Codex histories use other storage formats and are not covered by this JSONL reader.
 
 The reader checks file identity plus bounded prefix and pre-cursor content anchors. It detects common same-inode truncate/regrow cases, but cannot detect every edit outside those windows or changes that occur and are reverted between reads. It cannot recover source records deleted before observation. There is no complete-history or exactly-once claim.
 
@@ -79,7 +128,7 @@ make integration  # actual binary with independent synthetic writer processes
 make fuzz         # bounded parser fuzzing
 ```
 
-Routine tests use isolated fixtures, make no model calls, and do not touch live agent stores. Go's standard `testing` framework supplies shared adapter conformance tests, 11 subprocess integration scenarios, race detection, coverage, and fuzzing without additional dependencies. Reports go to ignored `test-results/`; `make ci` is the future GitHub workflow's entry point. GitHub Actions is not configured yet. In a restricted workspace, use a writable cache, for example `GOCACHE=/private/tmp/agentview-go-cache make ci`.
+Routine tests use isolated fixtures, make no model calls, and do not touch live agent stores. Go's standard `testing` framework supplies shared adapter conformance tests, 17 subprocess integration scenarios, race detection, coverage, and fuzzing. Node’s built-in test runner checks browser view-model behavior. Reports go to ignored `test-results/`; `make ci` is the future GitHub workflow's entry point. GitHub Actions is not configured yet. In a restricted workspace, use a writable cache, for example `GOCACHE=/private/tmp/agentview-go-cache make ci`.
 
 Native compatibility is a separate opt-in check:
 

@@ -1,6 +1,6 @@
 # Provider adapter contract
 
-Implemented 13 November 2026. Adapters are compiled-in Go implementations. There is no public plugin ABI, remote protocol, automatic discovery, or process-control API in this milestone.
+Implemented 13 November 2026. Adapters are compiled-in Go implementations. There is no public plugin ABI, remote protocol, or process-control API. Recursive directory discovery is available for Claude and Codex; the other adapters currently require explicit files.
 
 ## Boundaries
 

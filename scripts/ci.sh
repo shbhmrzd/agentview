@@ -21,6 +21,8 @@ if ! AGENTVIEW_QA_RACE=1 go test -race -count=1 -timeout 120s -coverprofile=test
   exit 1
 fi
 go tool cover -func=test-results/coverage.out > test-results/coverage.txt
+printf '%s\n' 'Running browser view-model tests'
+node --test tests/web/*.test.mjs > test-results/web-tests.txt
 printf '%s\n' 'Running process integration tests with race instrumentation'
 if ! AGENTVIEW_QA_RACE=1 go test -race -count=1 -tags integration -timeout 120s -json ./tests/integration > test-results/integration.jsonl; then
   cat test-results/integration.jsonl

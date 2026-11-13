@@ -59,6 +59,7 @@ type Batch struct {
 	PendingBytes int
 	Discarding   bool
 	Generation   int64
+	ReadThrough  int64 // Byte position reached before an optional partial-tail rewind.
 }
 
 type Reader struct {
@@ -75,6 +76,7 @@ type Reader struct {
 	anchor        []byte
 	snapshot      bool
 	snapshotLimit int64
+	rereadPartial bool // Directory readers retain no per-source incomplete payload.
 }
 
 func NewReader(path string, maxRecord, batchBytes int) (*Reader, error) {
@@ -101,6 +103,33 @@ func (r *Reader) Location() Source {
 // Freeze limits inspection to the byte size at the first successful open.
 // Call before ReadBatch. Changes between reads cannot form an atomic snapshot.
 func (r *Reader) Freeze() { r.snapshot = true; r.snapshotLimit = -1 }
+
+// captureBoundary opens the source before scheduling it, so backlog processing
+// cannot move its initial boundary. It also seeds rewrite detection.
+func (r *Reader) captureBoundary() (int64, error) {
+	f, err := openSource(r.path)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return 0, err
+	}
+	if !info.Mode().IsRegular() {
+		return 0, fmt.Errorf("source must be a regular file")
+	}
+	count := min(int64(anchorBytes), info.Size())
+	prefix := make([]byte, count)
+	if _, err := f.ReadAt(prefix, 0); err != nil {
+		return 0, err
+	}
+	r.identity, r.prefix = info, prefix
+	if r.snapshot {
+		r.snapshotLimit = info.Size()
+	}
+	return info.Size(), nil
+}
 
 // ReadBatch consumes at most batchBytes newly available bytes. Only newline-
 // terminated records are returned. The reader must be used by one goroutine.
@@ -222,6 +251,24 @@ func (r *Reader) ReadBatch() (Batch, error) {
 	b.PendingBytes = len(r.pending)
 	b.Discarding = r.discarding
 	b.Generation = r.generation
+	b.ReadThrough = r.offset
+	if r.rereadPartial && len(r.pending) > 0 {
+		// Re-read an incomplete tail next time instead of retaining up to one
+		// max-sized payload for every discovered source. Directory batches are
+		// larger than maxRecord, so rewinding cannot prevent forward progress.
+		r.offset = r.lineStart
+		r.pending = nil
+		r.prefix = make([]byte, min(int64(anchorBytes), r.offset))
+		r.anchor = make([]byte, min(int64(anchorBytes), r.offset))
+		if _, err := f.ReadAt(r.prefix, 0); err != nil {
+			return b, err
+		}
+		if _, err := f.ReadAt(r.anchor, r.offset-int64(len(r.anchor))); err != nil {
+			return b, err
+		}
+	} else if r.rereadPartial {
+		r.pending = nil
+	}
 	return b, nil
 }
 
@@ -238,12 +285,13 @@ func matchesAt(f *os.File, expected []byte, offset int64) (bool, error) {
 }
 
 func (r *Reader) remember(data []byte) {
-	if len(r.prefix) < anchorBytes {
-		n := anchorBytes - len(r.prefix)
-		if n > len(data) {
-			n = len(data)
+	start := r.offset - int64(len(data))
+	if len(r.prefix) < anchorBytes && start <= int64(len(r.prefix)) {
+		from := int64(len(r.prefix)) - start
+		if from < int64(len(data)) {
+			n := min(anchorBytes-len(r.prefix), len(data)-int(from))
+			r.prefix = append(r.prefix, data[from:int(from)+n]...)
 		}
-		r.prefix = append(r.prefix, data[:n]...)
 	}
 	if len(data) >= anchorBytes {
 		r.anchor = append(r.anchor[:0], data[len(data)-anchorBytes:]...)

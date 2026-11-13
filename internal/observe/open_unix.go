@@ -8,6 +8,10 @@ import (
 	"syscall"
 )
 
+func openDirectory(path string) (*os.File, error) {
+	return os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW|syscall.O_DIRECTORY, 0)
+}
+
 func openSource(path string) (*os.File, error) {
 	// Nonblocking prevents a replacement FIFO from hanging between discovery and
 	// open; NOFOLLOW rejects a symlink in the final path component. Ancestor

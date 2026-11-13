@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AgentView · Conversations</title><script src="/theme.js"></script><link rel="stylesheet" href="/themes.css"><link rel="stylesheet" href="/style.css"><script type="module" src="/app.js"></script></head>
+<body>
+<aside class="sidebar">
+  <a class="brand" href="/" aria-label="AgentView home"><span class="logo">a<span>v</span></span>AgentView<span class="preview">preview</span></a>
+  <div class="sidebar-label">WORKSPACE</div>
+  <button class="nav selected" data-provider="all"><span>▦</span> <span id="all-label">All conversations</span> <b id="total-count">0</b></button>
+  <div class="sidebar-label sources-label">SOURCES</div>
+  <div id="sources"></div>
+  <div class="sidebar-bottom"><div class="local-dot"></div><strong>On your machine</strong><p>Reads local session files.<br>Agent processes stay independent.</p><button id="diagnostics-button" class="quiet">View diagnostics <span id="diagnostic-count">0</span></button></div>
+</aside>
+<main>
+  <header class="topbar"><span>Session workspace</span><div class="topbar-actions"><label class="theme-control">Theme<select id="theme-select" aria-label="Dashboard theme"></select></label><button id="take-tour" class="tour-trigger"><span aria-hidden="true">▷</span> Take a tour</button><span id="connection" role="status">Connecting…</span></div></header>
+  <section class="workspace-heading"><div><div class="eyebrow">OBSERVE · EXPLORE</div><h1 id="page-title">Conversations</h1><p id="page-description">Main conversations, with child agents grouped inside.</p></div><button id="recent-summary" class="summary" title="Show conversations or sources with new transcript activity observed in the last 2 minutes"><strong id="recent-count">—</strong><span id="recent-label">conversations with new activity · 2 min</span></button></section>
+  <div id="notice" class="notice" role="status" hidden></div>
+  <section class="workspace">
+    <div class="session-panel">
+      <div class="list-toolbar"><label class="inventory-control">List view<select id="inventory-view"><option value="conversations">Conversations</option><option value="sources">All sources</option></select></label><p id="inventory-note" class="inventory-note">Discovering conversations…</p><label class="search"><span>⌕</span><input id="search" type="search" placeholder="Search conversations or agents" aria-label="Search conversations or agents"></label><div class="list-filter"><span id="visible-count">Discovering sessions…</span><label><span class="sr-only">Activity window</span><select id="window"><option value="24">Last 24 hours</option><option value="updates">New activity (2 min)</option><option value="1">Last hour</option><option value="all">All history</option></select></label></div><p class="activity-legend"><span class="activity-dot"></span>New activity = recent transcript updates</p></div>
+      <div id="session-list" class="session-list" aria-label="Conversation and source list"></div>
+      <div id="list-foot" class="list-foot">Sorted by source activity · updated every second</div>
+    </div>
+    <section class="detail-panel" aria-label="Selected session">
+      <div id="empty-detail" class="empty-detail"><span class="empty-icon">▤</span><h2>Your conversations live here</h2><p>Select a conversation to explore its agents<br>or follow new activity.</p></div>
+      <div id="selected-detail" hidden>
+        <div class="detail-heading"><div><div class="eyebrow" id="detail-provider"></div><h2 id="detail-project"></h2><div id="detail-id" class="mono"></div></div><span id="detail-status" class="badge"></span></div>
+        <div id="activity-hint" class="activity-hint"></div>
+        <div id="agent-family" class="agent-family" aria-label="Agents in this session"></div>
+        <div id="metric-strip" class="metric-strip"></div>
+        <div class="detail-tabs"><button id="history-tab" class="active">History</button><button id="live-tab">Live activity <span id="live-count">0</span></button><button id="agents-tab">Agent tree</button><button id="metrics-tab">Metrics</button><button id="refresh-history" class="refresh">↻ Refresh</button></div>
+        <div id="trace-filters" class="trace-filters"><label><span class="sr-only">Event type</span><select id="event-type"><option value="all">All events</option><option value="message.">Messages</option><option value="tool.">Tools</option><option value="coordination">Coordination</option><option value="turn.">Turns</option></select></label><input id="trace-search" type="search" placeholder="Find in this trace" aria-label="Find in this trace"><button id="payload-guide" class="payload-guide" title="See a sample tool payload and result">Payload guide ↗</button></div>
+        <div id="view-note" class="view-note"></div>
+        <div id="timeline" class="timeline" aria-live="off"></div>
+        <details class="source-info"><summary>Source details</summary><dl><dt>Working directory</dt><dd id="detail-directory"></dd><dt>Transcript</dt><dd id="detail-path"></dd><dt>Process state</dt><dd>Unknown — file activity does not establish whether an agent is running.</dd></dl></details>
+      </div>
+    </section>
+  </section>
+</main>
+<dialog id="diagnostics"><div class="dialog-title"><h2>Observation diagnostics</h2><button id="close-diagnostics" aria-label="Close diagnostics">✕</button></div><p>Source coverage and records omitted from the conversation view.</p><div id="diagnostic-body"></div><p class="muted">Checkpoints are not persisted. Restarting the dashboard starts a new live observation window.</p></dialog>
+<dialog id="tour-dialog" aria-labelledby="tour-title" aria-describedby="tour-description">
+  <div class="tour-heading"><span id="tour-progress" class="eyebrow"></span><button id="tour-close" aria-label="Skip tour">✕</button></div>
+  <progress id="tour-meter" max="6" value="0" aria-label="Tour progress"></progress>
+  <h2 id="tour-title" aria-live="polite"></h2><p id="tour-description"></p>
+  <ol id="tour-workflow" class="tour-workflow"><li>Find a conversation with new activity</li><li>Follow the main agent and its children</li><li><button id="tour-payload-shortcut">Try the payload &amp; result demo →</button></li></ol>
+  <section id="tour-payload-demo" class="payload-demo" aria-label="Sample tool call and result" hidden>
+    <div class="demo-caption"><strong>INTERACTIVE EXAMPLE</strong><span>Sample data · no command is run</span></div>
+    <div class="demo-pair">
+      <details class="tool tool-request" id="demo-request" open><summary>↗ Tool call · exec_command</summary><div class="payload-label">Input payload · demo-call-01</div><pre>{
+  "cmd": "go test ./...",
+  "workdir": "/demo/project"
+}</pre></details>
+      <details class="tool tool-result" id="demo-result" open><summary>↙ Tool result · exec_command</summary><div class="payload-label">Recorded result · demo-call-01</div><pre>{
+  "exit_code": 0,
+  "output": "ok  example/project"
+}</pre></details>
+    </div>
+    <p class="demo-explanation"><strong>Input: what the agent asked the tool to do. Result: what the tool returned.</strong> The matching call ID links the two. Click either header to collapse or reopen it.</p>
+  </section>
+  <p id="tour-context" class="tour-context"></p>
+  <div class="tour-actions"><button id="tour-skip" class="tour-secondary">Skip tour</button><div><button id="tour-back" class="tour-secondary">Back</button><button id="tour-next" class="tour-primary">Start tour</button></div></div>
+</dialog>
+</body></html>
