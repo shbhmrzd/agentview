@@ -15,6 +15,8 @@ import (
 	"github.com/shbhmrzd/agentview/internal/observe"
 )
 
+var version = "dev"
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	done := make(chan struct{})
@@ -57,6 +59,10 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) int {
 		return 0
 	}
 	mode := args[0]
+	if mode == "version" || mode == "--version" {
+		fmt.Fprintln(out, "agentview", version)
+		return 0
+	}
 	if mode == "serve" {
 		return runServe(ctx, args[1:], out, errOut)
 	}

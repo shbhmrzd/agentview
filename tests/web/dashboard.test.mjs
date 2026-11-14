@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {visibleSessions, prettyContent, age, relatedSessions, resolveTarget, filterEvents, agentForest} from '../../internal/dashboard/web/helpers.mjs';
+import {visibleSessions, prettyContent, age, relatedSessions, resolveTarget, filterEvents, agentForest, linkedChildren} from '../../internal/dashboard/web/helpers.mjs';
 
 const root = {id:'a',agent:'codex',session_id:'root',group_id:'group',project:'agentview',last_activity:'2026-01-01T12:00:00Z',context:{}};
 const child = {id:'b',agent:'codex',session_id:'child',group_id:'group',project:'agentview',last_activity:root.last_activity,context:{parent_thread_id:'root',agent_path:'/root/reviewer',name:'Reviewer'}};
@@ -55,4 +55,23 @@ test('agent tree breaks cycles without losing sources', () => {
   assert.equal(forest[0].children.length,1);
   const self = agentForest([{...root,context:{parent_thread_id:'root'}}]);
   assert.match(self[0].note,/self-parent/);
+});
+
+test('spawn paths resolve only among unique recorded children of the spawning parent', () => {
+  const reused = {...child,id:'other-child',session_id:'different',context:{...child.context,parent_thread_id:'other-root'}};
+  const sessions=[root,child,reused,other];
+  assert.deepEqual(linkedChildren(sessions,root,{related_agent_paths:['/root/reviewer']}),[child]);
+  assert.deepEqual(linkedChildren(sessions,root,{related_agent_ids:['child']}),[child]);
+  assert.deepEqual(linkedChildren(sessions,other,{related_agent_paths:['/root/reviewer']}),[]);
+  assert.deepEqual(linkedChildren([...sessions,{...child,id:'duplicate'}],root,{related_agent_paths:['/root/reviewer']}),[]);
+  assert.deepEqual(linkedChildren(sessions,{...root,session_id:'missing'},{related_agent_paths:['/root/reviewer']}),[]);
+});
+
+test('communication paths resolve within a family and never fall back to unrelated families',()=>{
+ const otherRoot={...root,id:'other-root',session_id:'other-root',group_id:'other-group'};
+ const otherChild={...child,id:'other-child',session_id:'other-child',group_id:'other-group',context:{...child.context,parent_thread_id:'other-root'}};
+ assert.equal(resolveTarget([root,child,otherRoot,otherChild],root,'/root/reviewer'),child);
+ assert.equal(resolveTarget([root,otherRoot,otherChild],root,'/root/reviewer'),null);
+ assert.equal(resolveTarget([root,child,{...child,id:'copy'},otherRoot,otherChild],root,'/root/reviewer'),null);
+ assert.equal(resolveTarget([root,child,otherRoot,otherChild],root,'other-child'),otherChild);
 });

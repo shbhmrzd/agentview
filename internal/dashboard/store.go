@@ -22,43 +22,61 @@ const (
 )
 
 type Entry struct {
-	Coordination *observe.Coordination `json:"coordination,omitempty"`
-	DurationMS   *int64                `json:"duration_ms,omitempty"`
-	Source       observe.Source        `json:"source"`
-	NativeType   string                `json:"native_type"`
-	Sequence     uint64                `json:"sequence"`
-	Kind         string                `json:"kind"`
-	Time         string                `json:"time"`
-	Tool         string                `json:"tool,omitempty"`
-	CallID       string                `json:"call_id,omitempty"`
-	Content      string                `json:"content,omitempty"`
-	Captured     bool                  `json:"captured"`
-	Clipped      bool                  `json:"clipped,omitempty"`
-	Phase        string                `json:"phase,omitempty"`
-	Error        bool                  `json:"error,omitempty"`
+	CorrelationStatus string                 `json:"correlation_status,omitempty"`
+	RelatedAgentPaths []string               `json:"related_agent_paths,omitempty"`
+	PartialRecord     bool                   `json:"partial_record,omitempty"`
+	Outcome           *observe.Outcome       `json:"outcome,omitempty"`
+	Communication     *observe.Communication `json:"communication,omitempty"`
+	RelatedAgentIDs   []string               `json:"related_agent_ids,omitempty"`
+	Detail            string                 `json:"detail,omitempty"`
+	Request           *Entry                 `json:"request,omitempty"`
+	PrecedingCalls    []string               `json:"preceding_calls,omitempty"`
+	Gap               string                 `json:"gap,omitempty"`
+	ID                string                 `json:"id"`
+	NativeID          string                 `json:"native_id,omitempty"`
+	TurnID            string                 `json:"turn_id,omitempty"`
+	TimeStatus        string                 `json:"time_status"`
+	ObservedAt        string                 `json:"observed_at"`
+	Coordination      *observe.Coordination  `json:"coordination,omitempty"`
+	DurationMS        *int64                 `json:"duration_ms,omitempty"`
+	Source            observe.Source         `json:"source"`
+	NativeType        string                 `json:"native_type"`
+	Sequence          uint64                 `json:"sequence"`
+	Kind              string                 `json:"kind"`
+	Time              string                 `json:"time"`
+	Tool              string                 `json:"tool,omitempty"`
+	CallID            string                 `json:"call_id,omitempty"`
+	Content           string                 `json:"content,omitempty"`
+	Captured          bool                   `json:"captured"`
+	Clipped           bool                   `json:"clipped,omitempty"`
+	Phase             string                 `json:"phase,omitempty"`
+	Error             bool                   `json:"error,omitempty"`
 }
 
 type Session struct {
-	Overview       *AgentOverview       `json:"overview,omitempty"`
-	GroupID        string               `json:"group_id,omitempty"`
-	Context        observe.AgentContext `json:"context"`
-	Metrics        Metrics              `json:"metrics"`
-	ParentEvidence string               `json:"parent_evidence,omitempty"`
-	ID             string               `json:"id"`
-	Agent          string               `json:"agent"`
-	SessionID      string               `json:"session_id"`
-	Title          string               `json:"title,omitempty"`
-	Project        string               `json:"project"`
-	Directory      string               `json:"directory"`
-	Path           string               `json:"path"`
-	Status         string               `json:"status"`
-	LastActivity   string               `json:"last_activity"`
-	LastUpdateAt   string               `json:"last_update_at,omitempty"`
-	LiveCount      uint64               `json:"live_count"`
-	Diagnostics    uint64               `json:"diagnostics"`
-	Generation     int64                `json:"generation"`
-	events         []Entry
-	overview       AgentOverview
+	DelegationsOmitted uint64               `json:"delegations_omitted,omitempty"`
+	Delegations        []Delegation         `json:"delegations,omitempty"`
+	ReaderID           string               `json:"reader_id,omitempty"`
+	Overview           *AgentOverview       `json:"overview,omitempty"`
+	GroupID            string               `json:"group_id,omitempty"`
+	Context            observe.AgentContext `json:"context"`
+	Metrics            Metrics              `json:"metrics"`
+	ParentEvidence     string               `json:"parent_evidence,omitempty"`
+	ID                 string               `json:"id"`
+	Agent              string               `json:"agent"`
+	SessionID          string               `json:"session_id"`
+	Title              string               `json:"title,omitempty"`
+	Project            string               `json:"project"`
+	Directory          string               `json:"directory"`
+	Path               string               `json:"path"`
+	Status             string               `json:"status"`
+	LastActivity       string               `json:"last_activity"`
+	LastUpdateAt       string               `json:"last_update_at,omitempty"`
+	LiveCount          uint64               `json:"live_count"`
+	Diagnostics        uint64               `json:"diagnostics"`
+	Generation         int64                `json:"generation"`
+	events             []Entry
+	overview           AgentOverview
 }
 
 type Root struct {
@@ -77,11 +95,12 @@ type Snapshot struct {
 }
 
 type Store struct {
-	mu          sync.RWMutex
-	sessions    map[string]*Session
-	roots       map[string]Root
-	diagnostics map[string]uint64
-	order       []struct {
+	delegationOrder []struct{ id, resultID string }
+	mu              sync.RWMutex
+	sessions        map[string]*Session
+	roots           map[string]Root
+	diagnostics     map[string]uint64
+	order           []struct {
 		id  string
 		seq uint64
 	}
@@ -106,33 +125,44 @@ func (s *Store) SetRoot(root Root) {
 }
 
 func displayEvent(e observe.Event) (Entry, bool) {
-	if !strings.HasPrefix(e.Kind, "message.") && !strings.HasPrefix(e.Kind, "tool.") && !strings.HasPrefix(e.Kind, "turn.") {
+	if !strings.HasPrefix(e.Kind, "message.") && !strings.HasPrefix(e.Kind, "tool.") && !strings.HasPrefix(e.Kind, "turn.") && !strings.HasPrefix(e.Kind, "agent.") && e.Kind != "context.compacted" && e.Kind != "hook.summary" && e.Kind != "api.error" {
 		return Entry{}, false
 	}
-	when := e.OccurredAt
-	if when == "" {
-		when = e.ObservedAt
-	}
 	content := e.Content
-	clipped := len(content) > maxContentBytes
-	if clipped {
+	clipped := len(content) > maxContentBytes || e.ContentClipped
+	if len(content) > maxContentBytes {
 		content = content[:maxContentBytes]
 		for !utf8.ValidString(content) {
 			content = content[:len(content)-1]
 		}
 	}
-	return Entry{Kind: e.Kind, Time: when, Tool: e.ToolName, CallID: e.ToolCallID, Content: strings.Clone(content), Captured: e.ContentCaptured, Clipped: clipped, Phase: e.ObservationPhase, Error: e.IsError != nil && *e.IsError, Source: e.Source, NativeType: e.NativeType, Coordination: e.Coordination}, true
+	entry := Entry{RelatedAgentPaths: e.RelatedAgentPaths, PartialRecord: e.PartialRecord, Outcome: e.Outcome, Communication: e.Communication, RelatedAgentIDs: e.RelatedAgentIDs, Detail: e.Detail, ID: e.ID, NativeID: e.NativeID, TurnID: e.TurnID, TimeStatus: e.TimeStatus, ObservedAt: e.ObservedAt, Kind: e.Kind, Time: e.OccurredAt, Tool: e.ToolName, CallID: e.ToolCallID, Content: strings.Clone(content), Captured: e.ContentCaptured, Clipped: clipped, Phase: e.ObservationPhase, Error: (e.IsError != nil && *e.IsError) || (e.Outcome != nil && e.Outcome.Status == "failure"), Source: e.Source, NativeType: e.NativeType, Coordination: e.Coordination, PrecedingCalls: e.PrecedingCalls, Gap: e.EvidenceGap}
+	if e.Call != nil {
+		entry.CorrelationStatus = e.Call.Status
+		entry.Gap = strings.TrimSpace(entry.Gap + " " + e.Call.Detail)
+		entry.DurationMS = e.Call.DurationMS
+		if e.Call.Request != nil {
+			request, _ := displayEvent(*e.Call.Request)
+			entry.Request = &request
+		}
+	}
+	return entry, true
 }
 
 func (s *Store) Apply(e observe.Event) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if strings.HasPrefix(e.Kind, "directory.") {
+		key := sourceID(e.Agent, e.Source.Path)
+		if e.Kind == "directory.ready" && s.roots[key].Status == "degraded" {
+			return // Only an explicit successful rescan establishes recovery.
+		}
 		status := "watching"
 		if e.Kind != "directory.ready" && e.Kind != "directory.recovered" {
 			status = "degraded"
+			s.diagnostics[e.Kind]++
 		}
-		s.roots[sourceID(e.Agent, e.Source.Path)] = Root{Agent: e.Agent, Path: e.Source.Path, Status: status, Detail: e.Detail}
+		s.roots[key] = Root{Agent: e.Agent, Path: e.Source.Path, Status: status, Detail: e.Detail}
 		return
 	}
 	if e.Source.Path == "" {
@@ -157,12 +187,15 @@ func (s *Store) Apply(e observe.Event) {
 		item.Project = filepath.Base(filepath.Dir(e.Source.Path))
 		item.events = nil
 		item.Metrics = Metrics{}
+		item.Delegations = nil
+		item.DelegationsOmitted = 0
 		item.overview = AgentOverview{}
 		item.LastUpdateAt = ""
 	}
 	if e.SessionID != "" {
 		item.SessionID = e.SessionID
 	}
+	item.ReaderID = e.Source.ReaderID
 	if e.GroupSessionID != "" {
 		item.GroupID = e.GroupSessionID
 	}
@@ -179,6 +212,9 @@ func (s *Store) Apply(e observe.Event) {
 	duration := item.Metrics.apply(e)
 	if s.content {
 		item.overview.apply(e)
+		if e.SessionTitle != "" {
+			item.Title = requestTitle(e.SessionTitle)
+		}
 		if item.Title == "" && e.Kind == "message.user" && e.ContentCaptured && !e.Inherited {
 			item.Title = requestTitle(e.Content)
 		}
@@ -220,6 +256,23 @@ func (s *Store) Apply(e observe.Event) {
 	entry, ok := displayEvent(e)
 	if !ok {
 		return
+	}
+	if (len(entry.RelatedAgentIDs) > 0 || len(entry.RelatedAgentPaths) > 0) && entry.Kind == "tool.result" {
+		item.Delegations = append(item.Delegations, Delegation{Result: entry})
+		if len(item.Delegations) > 100 {
+			item.Delegations = append([]Delegation(nil), item.Delegations[1:]...)
+			item.DelegationsOmitted++
+		}
+		s.delegationOrder = append(s.delegationOrder, struct{ id, resultID string }{item.ID, entry.ID})
+		if len(s.delegationOrder) > 1024 {
+			old := s.delegationOrder[0]
+			s.delegationOrder = s.delegationOrder[1:]
+			if source := s.sessions[old.id]; source != nil && len(source.Delegations) > 0 && source.Delegations[0].Result.ID == old.resultID {
+				source.Delegations[0] = Delegation{}
+				source.Delegations = source.Delegations[1:]
+				source.DelegationsOmitted++
+			}
+		}
 	}
 	if e.ObservationPhase == "history" {
 		return
@@ -269,6 +322,7 @@ func (s *Store) Snapshot() Snapshot {
 		copy := *item
 		copy.Metrics = item.Metrics.summary()
 		copy.events = nil
+		copy.Delegations = nil
 		result.Sessions = append(result.Sessions, copy)
 	}
 	for _, root := range s.roots {
@@ -299,5 +353,6 @@ func (s *Store) Session(id string) (Session, []Entry, bool) {
 	copy := *item
 	copy.Metrics = item.Metrics.copy()
 	copy.events = nil
+	copy.Delegations = nil
 	return copy, append([]Entry{}, item.events...), true
 }

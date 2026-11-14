@@ -10,46 +10,58 @@ import (
 )
 
 type Event struct {
-	AgentContext     AgentContext  `json:"agent_context,omitempty"`
-	Usage            *TokenUsage   `json:"usage,omitempty"`
-	UsageBasis       string        `json:"usage_basis,omitempty"`
-	UsageID          string        `json:"usage_id,omitempty"`
-	Coordination     *Coordination `json:"coordination,omitempty"`
-	Inherited        bool          `json:"inherited,omitempty"`
-	SchemaVersion    int           `json:"schema_version"`
-	ID               string        `json:"occurrence_id"`
-	Agent            string        `json:"agent"`
-	AdapterVersion   string        `json:"adapter_version"`
-	Scope            string        `json:"scope"`
-	SessionKey       string        `json:"session_key,omitempty"`
-	SessionID        string        `json:"session_id,omitempty"`
-	WorkingDirectory string        `json:"working_directory,omitempty"`
-	SourceModifiedAt string        `json:"source_modified_at,omitempty"`
-	GroupSessionID   string        `json:"group_session_id,omitempty"`
-	NativeID         string        `json:"native_id,omitempty"`
-	MessageID        string        `json:"message_id,omitempty"`
-	NativeAgentID    string        `json:"native_agent_id,omitempty"`
-	CheckpointReplay *bool         `json:"checkpoint_replay,omitempty"`
-	ParentID         string        `json:"parent_id,omitempty"`
-	ParentThreadID   string        `json:"parent_thread_id,omitempty"`
-	ForkedFromID     string        `json:"forked_from_id,omitempty"`
-	SourceOrdinal    *uint64       `json:"source_ordinal,omitempty"`
-	TurnID           string        `json:"turn_id,omitempty"`
-	Kind             string        `json:"kind"`
-	NativeType       string        `json:"native_type,omitempty"`
-	ToolCallID       string        `json:"tool_call_id,omitempty"`
-	ToolName         string        `json:"tool_name,omitempty"`
-	IsError          *bool         `json:"is_error,omitempty"`
-	OccurredAt       string        `json:"occurred_at,omitempty"`
-	TimeStatus       string        `json:"time_status"`
-	ObservedAt       string        `json:"observed_at"`
-	Source           Source        `json:"source"`
-	CaptureMode      string        `json:"capture_mode"`
-	ObservationPhase string        `json:"observation_phase,omitempty"`
-	ExecutionState   string        `json:"execution_state"`
-	ContentCaptured  bool          `json:"content_captured"`
-	Content          string        `json:"content,omitempty"`
-	Detail           string        `json:"detail,omitempty"`
+	Call              *CallEvidence `json:"correlation,omitempty"`
+	PrecedingCalls    []string      `json:"preceding_calls,omitempty"`
+	EvidenceGap       string        `json:"evidence_gap,omitempty"`
+	ContentClipped    bool          `json:"content_clipped,omitempty"`
+	nativeOutput      json.RawMessage
+	RelatedAgentPaths []string       `json:"related_agent_paths,omitempty"`
+	PartialRecord     bool           `json:"partial_record,omitempty"`
+	RelatedAgentIDs   []string       `json:"related_agent_ids,omitempty"`
+	Outcome           *Outcome       `json:"outcome,omitempty"`
+	Communication     *Communication `json:"communication,omitempty"`
+	Stats             *ReportedStats `json:"reported_stats,omitempty"`
+	SessionTitle      string         `json:"session_title,omitempty"`
+	AgentContext      AgentContext   `json:"agent_context,omitempty"`
+	Usage             *TokenUsage    `json:"usage,omitempty"`
+	UsageBasis        string         `json:"usage_basis,omitempty"`
+	UsageID           string         `json:"usage_id,omitempty"`
+	Coordination      *Coordination  `json:"coordination,omitempty"`
+	Inherited         bool           `json:"inherited,omitempty"`
+	SchemaVersion     int            `json:"schema_version"`
+	ID                string         `json:"occurrence_id"`
+	Agent             string         `json:"agent"`
+	AdapterVersion    string         `json:"adapter_version"`
+	Scope             string         `json:"scope"`
+	SessionKey        string         `json:"session_key,omitempty"`
+	SessionID         string         `json:"session_id,omitempty"`
+	WorkingDirectory  string         `json:"working_directory,omitempty"`
+	SourceModifiedAt  string         `json:"source_modified_at,omitempty"`
+	GroupSessionID    string         `json:"group_session_id,omitempty"`
+	NativeID          string         `json:"native_id,omitempty"`
+	MessageID         string         `json:"message_id,omitempty"`
+	NativeAgentID     string         `json:"native_agent_id,omitempty"`
+	CheckpointReplay  *bool          `json:"checkpoint_replay,omitempty"`
+	ParentID          string         `json:"parent_id,omitempty"`
+	ParentThreadID    string         `json:"parent_thread_id,omitempty"`
+	ForkedFromID      string         `json:"forked_from_id,omitempty"`
+	SourceOrdinal     *uint64        `json:"source_ordinal,omitempty"`
+	TurnID            string         `json:"turn_id,omitempty"`
+	Kind              string         `json:"kind"`
+	NativeType        string         `json:"native_type,omitempty"`
+	ToolCallID        string         `json:"tool_call_id,omitempty"`
+	ToolName          string         `json:"tool_name,omitempty"`
+	IsError           *bool          `json:"is_error,omitempty"`
+	OccurredAt        string         `json:"occurred_at,omitempty"`
+	TimeStatus        string         `json:"time_status"`
+	ObservedAt        string         `json:"observed_at"`
+	Source            Source         `json:"source"`
+	CaptureMode       string         `json:"capture_mode"`
+	ObservationPhase  string         `json:"observation_phase,omitempty"`
+	ExecutionState    string         `json:"execution_state"`
+	ContentCaptured   bool           `json:"content_captured"`
+	Content           string         `json:"content,omitempty"`
+	Detail            string         `json:"detail,omitempty"`
 }
 
 // Normalizer owns attachment context; provider decoders own native semantics.
@@ -58,10 +70,12 @@ type Normalizer struct {
 	options    NormalizerOptions
 	decoder    decoder
 	generation int64
+	calls      *CallTracker
 }
 
 type NormalizerOptions struct {
 	IncludeContent bool
+	EvidenceBudget *EvidenceBudget
 	Scope          string
 }
 
@@ -77,12 +91,13 @@ func NewNormalizerWithOptions(agent string, options NormalizerOptions) (*Normali
 	if options.Scope == "" {
 		options.Scope = "local"
 	}
-	return &Normalizer{info: registration.info, options: options, decoder: registration.newDecoder(options)}, nil
+	return &Normalizer{info: registration.info, options: options, decoder: registration.newDecoder(options), calls: NewCallTracker(options.EvidenceBudget)}, nil
 }
 
 func (n *Normalizer) Normalize(r Record, observedAt time.Time) []Event {
 	if n.generation != r.Source.Generation {
 		n.decoder.Reset()
+		n.calls.Close()
 		n.generation = r.Source.Generation
 	}
 	session, group := n.decoder.Context()
@@ -95,6 +110,12 @@ func (n *Normalizer) Normalize(r Record, observedAt time.Time) []Event {
 	if r.Diagnostic != "" {
 		base.Kind, base.Detail = r.Diagnostic, diagnosticDetail(r.Diagnostic)
 		events = []Event{base}
+		if r.Diagnostic == "record.oversized" {
+			if decoder, ok := n.decoder.(interface{ DecodePartial(Record, Event) []Event }); ok {
+				events = append(events, decoder.DecodePartial(r, base)...)
+			}
+		}
+
 	} else {
 		events = n.decoder.Decode(r, base)
 	}
@@ -106,7 +127,27 @@ func (n *Normalizer) Normalize(r Record, observedAt time.Time) []Event {
 			events[i].SessionKey = hex.EncodeToString(sum[:])
 		}
 	}
-	return identify(events, r)
+	events = identify(events, r)
+	for i := range events {
+		e := &events[i]
+		n.calls.Apply(e)
+		if e.Kind == "tool.result" && len(e.nativeOutput) > 0 {
+			e.Outcome = executionOutcome(e.ToolName, e.nativeOutput)
+			if e.Call != nil && e.Call.Status == "paired" {
+				e.RelatedAgentIDs = spawnedIDs(e.ToolName, e.nativeOutput)
+				e.RelatedAgentPaths = spawnedPaths(e.ToolName, e.nativeOutput)
+			}
+			if e.IsError != nil {
+				e.Outcome = flagOutcome(e.IsError)
+			}
+			e.nativeOutput = nil
+		}
+		if e.Call != nil && (e.Call.Status == "ambiguous" || e.Call.Status == "duplicate_result") {
+			e.RelatedAgentIDs = nil
+			e.RelatedAgentPaths = nil
+		}
+	}
+	return events
 }
 
 func setTimestamp(base *Event, value string) {
@@ -149,7 +190,7 @@ func identify(events []Event, r Record) []Event {
 	recordDigest := sha256.Sum256(r.Data)
 	for i := range events {
 		h := sha256.New()
-		fmt.Fprintf(h, "%s\x00%s\x00%s\x00%d\x00%d\x00%d\x00", events[i].Agent, events[i].Scope, r.Source.Path, r.Source.Generation, r.Source.Offset, i)
+		fmt.Fprintf(h, "%s\x00%s\x00%s\x00%s\x00%d\x00%d\x00%d\x00", events[i].Agent, events[i].Scope, r.Source.Path, r.Source.ReaderID, r.Source.Generation, r.Source.Offset, i)
 		h.Write(recordDigest[:])
 		h.Write([]byte(events[i].Kind))
 		if r.Source.Kind == "snapshot" {
@@ -186,3 +227,5 @@ func diagnosticDetail(code string) string {
 		return strings.ReplaceAll(code, ".", " ")
 	}
 }
+
+func (n *Normalizer) Close() { n.calls.Close() }

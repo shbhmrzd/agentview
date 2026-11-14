@@ -7,7 +7,7 @@ import "strings"
 // not obscure the user's first request in the inventory.
 func requestTitle(content string) string {
 	text := strings.TrimSpace(content)
-	for _, prefix := range []string{"<environment_context>", "<permissions instructions>", "<user_instructions>", "# AGENTS.md instructions", "<INSTRUCTIONS>"} {
+	for _, prefix := range []string{"<environment_context>", "<permissions instructions>", "<user_instructions>", "# AGENTS.md instructions", "<INSTRUCTIONS>", "<command-name>", "<local-command-stdout>", "<local-command-caveat>"} {
 		if strings.HasPrefix(text, prefix) {
 			return ""
 		}

@@ -137,20 +137,25 @@ func TestMetricsSnapshotsDedupAndToolTiming(t *testing.T) {
 	if *claude.Usage.Total != 41 {
 		t.Fatal("streamed usage update not replaced")
 	}
+	tracker := observe.NewCallTracker(nil)
+	defer tracker.Close()
 	e = sample("s")
 	e.Kind = "tool.requested"
 	e.ToolName = "shell"
 	e.ToolCallID = "c"
 	e.OccurredAt = "2026-01-01T00:00:00Z"
+	tracker.Apply(&e)
 	m.apply(e)
 	e.Kind = "tool.result"
 	e.OccurredAt = "2026-01-01T00:00:02Z"
 	b := true
 	e.IsError = &b
+	tracker.Apply(&e)
 	ms := m.apply(e)
 	if ms == nil || *ms != 2000 || m.ReportedErrors != 1 || m.Tools["shell"].Timed != 1 {
 		t.Fatal("call/result pairing failed")
 	}
+	tracker.Apply(&e)
 	if m.apply(e) != nil {
 		t.Fatal("paired duplicate result twice")
 	}

@@ -16,12 +16,10 @@ func (n *codexDecoder) Decode(r Record, base Event) []Event {
 	}
 	base.NativeType, base.SourceOrdinal = row.Type, row.Ordinal
 	setTimestamp(&base, row.Timestamp)
-	if n.sessionID != "" && n.debug.HistoryStartOrdinal != nil && row.Ordinal != nil && *row.Ordinal < *n.debug.HistoryStartOrdinal {
-		base = ignored(base)
-		base.Inherited = true
-		base.Detail = "Inherited parent context precedes this subagent's recorded history boundary; omitted from agent activity."
-		return []Event{base}
+	if n.inherited(row.Ordinal) {
+		return []Event{inheritedRecord(base)}
 	}
+
 	return n.payload(base, row.Type, row.Payload)
 }
 
@@ -39,6 +37,11 @@ func (n *codexDecoder) payload(base Event, typ string, raw json.RawMessage) []Ev
 		Arguments      json.RawMessage `json:"arguments"`
 		Input          json.RawMessage `json:"input"`
 		Output         json.RawMessage `json:"output"`
+		IsError        *bool           `json:"is_error"`
+		Author         string          `json:"author"`
+		Recipient      string          `json:"recipient"`
+		TriggerTurn    *bool           `json:"trigger_turn"`
+		Message        string          `json:"message"`
 		Source         json.RawMessage `json:"source"`
 		AgentNickname  string          `json:"agent_nickname"`
 		AgentRole      string          `json:"agent_role"`
@@ -113,6 +116,7 @@ func (n *codexDecoder) payload(base Event, typ string, raw json.RawMessage) []Ev
 		case "function_call", "custom_tool_call":
 			base.Kind = "tool.requested"
 			base.ToolCallID, base.ToolName = payload.CallID, payload.Name
+
 			if payload.Type == "function_call" {
 				base.Coordination = coordination(payload.Name, rawText(payload.Arguments))
 				n.content(&base, rawText(payload.Arguments))
@@ -123,7 +127,19 @@ func (n *codexDecoder) payload(base Event, typ string, raw json.RawMessage) []Ev
 		case "function_call_output", "custom_tool_call_output":
 			base.Kind = "tool.result"
 			base.ToolCallID = payload.CallID
+			base.nativeOutput = payload.Output
+			base.IsError = payload.IsError
+
 			n.content(&base, rawText(payload.Output))
+		case "agent_message":
+			events := n.message(base, raw, "assistant")
+			for i := range events {
+				if events[i].Kind == "message.assistant" {
+					events[i].Kind = "agent.message"
+					events[i].Communication = &Communication{Author: payload.Author, Recipient: payload.Recipient, Evidence: "recorded agent message; receipt and processing not established"}
+				}
+			}
+			return events
 		case "reasoning":
 			base = ignored(base)
 		default:
@@ -152,6 +168,13 @@ func (n *codexDecoder) payload(base Event, typ string, raw json.RawMessage) []Ev
 		default:
 			base = unsupported(base)
 		}
+	case "inter_agent_communication_metadata":
+		base.Kind = "agent.communication"
+		base.Communication = &Communication{TriggerTurn: payload.TriggerTurn, Evidence: "standalone native metadata; not counted as another message or delivery acknowledgement"}
+	case "compacted":
+		base.Kind = "context.compacted"
+		base.Detail = "Recorded compaction boundary. Replacement history is not replayed as new conversation."
+		n.content(&base, payload.Message)
 	case "turn_context":
 		n.debug.Model, n.debug.Effort = payload.Model, payload.Effort
 		base.Kind = "session.context"
@@ -167,4 +190,14 @@ func (n *codexDecoder) payload(base Event, typ string, raw json.RawMessage) []Ev
 		base = unsupported(base)
 	}
 	return []Event{base}
+}
+
+func (n *codexDecoder) inherited(ordinal *uint64) bool {
+	return n.sessionID != "" && n.debug.HistoryStartOrdinal != nil && ordinal != nil && *ordinal < *n.debug.HistoryStartOrdinal
+}
+func inheritedRecord(base Event) Event {
+	base = ignored(base)
+	base.Inherited = true
+	base.Detail = "Inherited parent context precedes this subagent's recorded history boundary; omitted from agent activity."
+	return base
 }

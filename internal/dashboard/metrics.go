@@ -1,28 +1,32 @@
 package dashboard
 
 import (
-	"time"
-
 	"github.com/shbhmrzd/agentview/internal/observe"
 )
 
 // Metrics describe records in the currently indexed source generation. They
 // are not execution outcomes or cross-source billing totals.
 type Metrics struct {
-	InheritedRecords uint64                `json:"inherited_records"`
-	Messages         uint64                `json:"messages"`
-	ToolCalls        uint64                `json:"tool_calls"`
-	ToolResults      uint64                `json:"tool_results"`
-	ReportedErrors   uint64                `json:"reported_errors"`
-	Turns            uint64                `json:"turns"`
-	LastTurn         string                `json:"last_turn"`
-	Usage            *observe.TokenUsage   `json:"usage,omitempty"`
-	UsageBasis       string                `json:"usage_basis,omitempty"`
-	UsageAt          string                `json:"usage_at,omitempty"`
-	Partial          bool                  `json:"partial"`
-	Tools            map[string]ToolMetric `json:"tools"`
-	requests         map[string]toolRequest
-	usageMessages    map[string]observe.TokenUsage
+	FailureEvidence    uint64                 `json:"failure_evidence"`
+	UnsupportedRecords uint64                 `json:"unsupported_records"`
+	UnknownOutcomes    uint64                 `json:"unknown_outcomes"`
+	ReportedStats      *observe.ReportedStats `json:"reported_stats,omitempty"`
+	Compactions        uint64                 `json:"compactions"`
+	HookErrors         uint64                 `json:"hook_errors"`
+	APIErrors          uint64                 `json:"api_errors"`
+	InheritedRecords   uint64                 `json:"inherited_records"`
+	Messages           uint64                 `json:"messages"`
+	ToolCalls          uint64                 `json:"tool_calls"`
+	ToolResults        uint64                 `json:"tool_results"`
+	ReportedErrors     uint64                 `json:"reported_errors"`
+	Turns              uint64                 `json:"turns"`
+	LastTurn           string                 `json:"last_turn"`
+	Usage              *observe.TokenUsage    `json:"usage,omitempty"`
+	UsageBasis         string                 `json:"usage_basis,omitempty"`
+	UsageAt            string                 `json:"usage_at,omitempty"`
+	Partial            bool                   `json:"partial"`
+	Tools              map[string]ToolMetric  `json:"tools"`
+	usageMessages      map[string]observe.TokenUsage
 }
 
 type ToolMetric struct {
@@ -31,10 +35,6 @@ type ToolMetric struct {
 	Errors  uint64 `json:"errors"`
 	Timed   uint64 `json:"timed"`
 	TotalMS int64  `json:"total_ms"`
-}
-type toolRequest struct {
-	name string
-	at   time.Time
 }
 
 func value(p *int64) int64 {
@@ -58,13 +58,32 @@ func (m *Metrics) apply(e observe.Event) *int64 {
 	}
 	if m.Tools == nil {
 		m.Tools = make(map[string]ToolMetric)
-		m.requests = make(map[string]toolRequest)
 		m.usageMessages = make(map[string]observe.TokenUsage)
 	}
 	if e.Kind == "message.user" || e.Kind == "message.assistant" {
 		m.Messages++
 	}
+	if (e.Kind == "tool.result" || e.Kind == "api.error" || e.Kind == "hook.summary") && ((e.IsError != nil && *e.IsError) || (e.Outcome != nil && e.Outcome.Status == "failure")) {
+		m.FailureEvidence++
+	}
+	if e.Call != nil && e.Call.Status != "paired" && e.Call.Status != "pending" {
+		m.Partial = true
+	}
+	if e.Stats != nil {
+		copy := *e.Stats
+		m.ReportedStats = &copy
+	}
 	switch e.Kind {
+	case "record.unsupported":
+		m.UnsupportedRecords++
+	case "context.compacted":
+		m.Compactions++
+	case "hook.summary":
+		if e.IsError != nil && *e.IsError {
+			m.HookErrors++
+		}
+	case "api.error":
+		m.APIErrors++
 	case "turn.started":
 		m.Turns++
 		m.LastTurn = "started"
@@ -113,46 +132,44 @@ func (m *Metrics) apply(e observe.Event) *int64 {
 		metric := m.Tools[name]
 		metric.Calls++
 		m.Tools[name] = metric
-		if e.ToolCallID != "" {
-			if len(m.requests) < 1024 {
-				at, _ := time.Parse(time.RFC3339Nano, e.OccurredAt)
-				m.requests[e.ToolCallID] = toolRequest{name, at}
-			} else {
-				m.Partial = true
-			}
-		}
+
 	}
 	if e.Kind == "tool.result" {
 		m.ToolResults++
-		if e.IsError != nil && *e.IsError {
+		if e.IsError == nil && (e.Outcome == nil || e.Outcome.Status == "unknown") {
+			m.UnknownOutcomes++
+		}
+		if (e.IsError != nil && *e.IsError) || (e.Outcome != nil && e.Outcome.Status == "failure") {
 			m.ReportedErrors++
 		}
-		request, ok := m.requests[e.ToolCallID]
-		if !ok {
+		if e.Call == nil || e.Call.Status != "paired" || e.Call.Request == nil {
 			return nil
 		}
-		delete(m.requests, e.ToolCallID)
-		metric := m.Tools[request.name]
+		name := e.Call.Request.ToolName
+		if name == "" {
+			name = "unnamed"
+		}
+		if _, ok := m.Tools[name]; !ok {
+			name = "other"
+		}
+		metric := m.Tools[name]
 		metric.Results++
-		if e.IsError != nil && *e.IsError {
+		if (e.IsError != nil && *e.IsError) || (e.Outcome != nil && e.Outcome.Status == "failure") {
 			metric.Errors++
 		}
-		var duration *int64
-		at, err := time.Parse(time.RFC3339Nano, e.OccurredAt)
-		if err == nil && !request.at.IsZero() && !at.Before(request.at) {
-			ms := at.Sub(request.at).Milliseconds()
-			duration = &ms
+		duration := e.Call.DurationMS
+		if duration != nil {
 			metric.Timed++
-			metric.TotalMS += ms
+			metric.TotalMS += *duration
 		}
-		m.Tools[request.name] = metric
+		m.Tools[name] = metric
 		return duration
 	}
 	return nil
 }
 
 func (m Metrics) copy() Metrics {
-	m.requests, m.usageMessages = nil, nil
+	m.usageMessages = nil
 	if m.Usage != nil {
 		usage := *m.Usage
 		m.Usage = &usage
@@ -166,7 +183,7 @@ func (m Metrics) copy() Metrics {
 }
 
 func (m Metrics) summary() Metrics {
-	m.requests, m.usageMessages, m.Tools = nil, nil, nil
+	m.usageMessages, m.Tools = nil, nil
 	if m.Usage != nil {
 		usage := *m.Usage
 		m.Usage = &usage

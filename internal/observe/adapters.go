@@ -63,6 +63,7 @@ func jsonlInfo(name string) AdapterInfo {
 	}}
 	info.Capabilities.Usage, info.Capabilities.Coordination = "unavailable", "unavailable"
 	if name == "claude" || name == "codex" {
+		info.Version = "0.2.0"
 		info.Capabilities.Subagents, info.Capabilities.Usage, info.Capabilities.Coordination = "partial", "partial", "recorded_tool_requests"
 	}
 	return info

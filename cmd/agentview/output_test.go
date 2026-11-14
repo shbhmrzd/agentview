@@ -79,3 +79,16 @@ func TestOutputBoundsControlsAndPreservesRawJSON(t *testing.T) {
 		t.Fatal("invalid output format accepted")
 	}
 }
+
+func TestDegradedScanStillPrintsStartupSummary(t *testing.T) {
+	var out bytes.Buffer
+	w := newEventOutput(&out, "text", "inspect", "all")
+	for _, kind := range []string{"source.discovered", "directory.limit", "directory.ready", "source.ready"} {
+		if err := w.write(observe.Event{Kind: kind, Agent: "codex", Source: observe.Source{Path: "/demo"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !strings.Contains(out.String(), "Inspecting codex directory") || !strings.Contains(out.String(), "1 existing files") || !strings.Contains(out.String(), "directory.limit") {
+		t.Fatal(out.String())
+	}
+}

@@ -22,6 +22,7 @@ func ReadHistory(ctx context.Context, root, path, agent string, options Normaliz
 	if err != nil {
 		return false, err
 	}
+	defer normalizer.Close()
 	reader.Freeze()
 	for {
 		if err := ctx.Err(); err != nil {

@@ -1,0 +1,10 @@
+{"type":"session_meta","timestamp":"2026-11-13T10:00:00Z","payload":{"id":"fixture-parent","cwd":"/demo/project"}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":"PRIVATE_FIXTURE investigate a failure"}}
+{"type":"response_item","payload":{"type":"function_call","call_id":"exec-1","name":"exec_command","arguments":"{\"cmd\":\"exit 2\"}"}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"exec-1","output":"{\"exit_code\":2,\"output\":\"PRIVATE_FIXTURE\"}"}}
+{"type":"response_item","payload":{"type":"function_call","call_id":"spawn-1","name":"collaboration.spawn_agent","arguments":"{\"task_name\":\"review\",\"message\":\"Inspect the failing command\"}"}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"spawn-1","output":"{\"task_name\":\"/root/review\"}"}}
+{"type":"inter_agent_communication_metadata","payload":{"trigger_turn":true}}
+{"type":"response_item","payload":{"type":"agent_message","id":"message-1","author":"fixture-child","recipient":"fixture-parent","content":[{"type":"input_text","text":"PRIVATE_FIXTURE command returned 2"}]}}
+{"type":"compacted","payload":{"message":"PRIVATE_FIXTURE compaction summary","replacement_history":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"MUST_NOT_REPLAY"}]}]}}
+{"type":"response_item","payload":{"type":"message","role":"assistant","content":"PRIVATE_FIXTURE I will inspect the failure"}}

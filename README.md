@@ -1,6 +1,8 @@
 # AgentView
 
-A Go experiment for inspecting existing agent session records through provider adapters, with explicit source provenance and uncertainty. It reads a selected file or discovers files beneath an explicitly selected session directory. It does not launch, resume, interrupt, or configure agents.
+A local browser for investigating coding-agent sessions: inspect tool failures, follow delegated work, and trace each observation back to its source. It reads a selected file or discovers files beneath an explicitly selected session directory. It does not launch, resume, interrupt, or configure agents.
+
+Release archives currently have SHA-256 checksums, but are unsigned and do not include artifact attestations.
 
 **Status: local browser preview.** Browse Claude Code and Codex sessions, navigate recorded agent relationships, inspect history or live activity, and examine available token and tool metrics. CLI inspection also supports experimental Copilot and Rovo adapters. There is no durable history or agent-control API.
 
@@ -20,9 +22,9 @@ Choose **New activity (2 min)** to find sessions with newly observed messages, t
 **Agent tree** groups recorded parent/child relationships with request and reply excerpts. **Payload guide** opens an interactive sample call/result. Use **Theme** in the top bar to switch between light and dark; your browser remembers the choice.
 
 - Select a session, then an agent in its recorded family.
-- **History** reads a bounded snapshot; **Live activity** follows newly observed records.
-- **Metrics** shows available model, usage, tool counts, explicit error flags, and paired timestamp gaps.
-- Filter messages, tools, coordination requests, or turns; expand payloads and record provenance when needed.
+- **History** pages through the file’s initial boundary; **Live activity** follows newly observed records.
+- **Metrics** shows available model, usage, tool counts, failure evidence, unknown outcomes, reported cost estimates, and paired timestamp gaps.
+- Filter messages, tools, failures, communication, context changes, or turns; expand payloads and record provenance when needed.
 - Search projects/session IDs, switch providers, or choose **All history** for older sources.
 
 Use `--agent codex` or `--agent claude` to select one provider. For a custom root:
@@ -102,18 +104,18 @@ Exit codes: 0 means the inspection completed or following was cancelled; 1 means
 
 ## What the output means
 
-- `source` identifies the selected input and attachment generation.
+- `source` identifies the selected input, reader identity, and reader-local generation. Independent history/live readers have independent counters.
 - JSONL sources use byte offsets; snapshots use a revision and optional part index. `adapter_version` identifies the decoding contract.
 - `session_key` namespaces native session IDs by provider and `--scope` (default `local`). Use distinct stable scopes when combining different hosts/accounts. Source paths identify selected inputs, not canonical session identity. Scoped occurrence IDs remain attachment-local and can differ from pre-adapter prototype IDs.
 - `occurrence_id` identifies an occurrence in this attachment. It is not a durable cursor or cross-export deduplication promise.
 - `occurred_at` is the source timestamp when valid; `time_status` distinguishes a valid source time, an absent timestamp, and an invalid timestamp. `observed_at` is when AgentView projected the record. Late import does not make historical activity current.
 - `execution_state` stays `unknown`. File changes, a recorded turn ending, or an assistant saying “done” cannot establish task success or current process state.
-- `tool.requested` records an invocation request; it does not prove execution began. `tool.result` retains structured error information only when the source supplies it.
+- `tool.requested` records an invocation request; it does not prove execution began. `tool.result` exposes native error flags or supported process-exit evidence; absent evidence remains unknown.
 - Claude parent IDs identify conversation records, not parent agents. Codex thread IDs and optional group session IDs are separate fields.
 - Copilot preserves `checkpoint_replay` and `native_agent_id` when supplied. These are source facts; a subagent tree and current execution state are not inferred from them.
 - Content-free diagnostics describe malformed, unsupported, skipped, and changing input without printing raw record contents.
 
-Each source follows physical record order; directory output interleaves sources without claiming a global causal order. Reconstructing compacted/branched conversations, current approval state, complete native subagent lineage, SQLite history, persistent checkpoints, configurable retention, and managed exports are future work. The browser provides source-level search, partial recorded relationships, paired tool timing, and available usage counters. Native smoke tests have exercised newly created Claude Code 2.1.316 and Codex CLI 0.149.0 JSONL sessions. Those checks covered a seed response and a second response after resuming the same disposable session while AgentView followed its file; they do not establish compatibility with other versions or storage formats. Some Codex histories use other storage formats and are not covered by this JSONL reader.
+Each source follows physical record order; directory output interleaves sources without claiming a global causal order. Reconstructing compacted/branched conversations, current approval state, complete native subagent lineage, SQLite history, persistent checkpoints, and configurable retention are future work. Redacted structural investigation exports are available from the dashboard. The browser provides source-level search, partial recorded relationships, paired tool timing, and available usage counters. Native smoke tests have exercised newly created Claude Code 2.1.316 and Codex CLI 0.149.0 JSONL sessions. Those checks covered a seed response and a second response after resuming the same disposable session while AgentView followed its file; they do not establish compatibility with other versions or storage formats. Some Codex histories use other storage formats and are not covered by this JSONL reader.
 
 The reader checks file identity plus bounded prefix and pre-cursor content anchors. It detects common same-inode truncate/regrow cases, but cannot detect every edit outside those windows or changes that occur and are reverted between reads. It cannot recover source records deleted before observation. There is no complete-history or exactly-once claim.
 
@@ -126,9 +128,13 @@ make ci           # format, vet, race tests, process integration, fuzz, build
 make test         # unit + CLI regression tests
 make integration  # actual binary with independent synthetic writer processes
 make fuzz         # bounded parser fuzzing
+npm ci
+npx playwright install chromium
+make browser      # real Chromium against disposable session files
+make release VERSION=dev  # local archives and checksums in dist/
 ```
 
-Routine tests use isolated fixtures, make no model calls, and do not touch live agent stores. Go's standard `testing` framework supplies shared adapter conformance tests, 17 subprocess integration scenarios, race detection, coverage, and fuzzing. Node’s built-in test runner checks browser view-model behavior. Reports go to ignored `test-results/`; `make ci` is the future GitHub workflow's entry point. GitHub Actions is not configured yet. In a restricted workspace, use a writable cache, for example `GOCACHE=/private/tmp/agentview-go-cache make ci`.
+Routine tests use isolated fixtures, make no model calls, and do not touch live agent stores. Go's standard `testing` framework supplies shared adapter conformance tests, 17 subprocess integration scenarios, race detection, coverage, and fuzzing. Node’s built-in test runner checks browser view-model behavior. Reports go to ignored `test-results/`; GitHub Actions runs `make ci` plus Playwright browser tests on macOS and Linux. Tagged releases produce four architecture-specific archives, checksums, and a draft release after verification. In a restricted workspace, use a writable cache, for example `GOCACHE=/private/tmp/agentview-go-cache make ci`.
 
 Native compatibility is a separate opt-in check:
 

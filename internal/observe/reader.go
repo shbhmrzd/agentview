@@ -4,6 +4,7 @@ package observe
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,8 +21,10 @@ const (
 )
 
 // Source identifies a physical occurrence, not a canonical conversation node.
-// Generation is local to this attachment and is not a durable restart cursor.
+// ReaderID namespaces JSONL generations. Generation is local to that reader,
+// not a durable restart cursor or a revision comparable across history/live.
 type Source struct {
+	ReaderID   string `json:"reader_id,omitempty"`
 	Kind       string `json:"kind,omitempty"`
 	Path       string `json:"path"`
 	Generation int64  `json:"generation"`
@@ -51,6 +54,7 @@ type Record struct {
 	Source     Source
 	Data       []byte
 	Diagnostic string
+	Header     *partialHeader
 }
 
 type Batch struct {
@@ -63,6 +67,7 @@ type Batch struct {
 }
 
 type Reader struct {
+	id            string
 	path          string
 	maxRecord     int
 	batchBytes    int
@@ -93,11 +98,11 @@ func NewReader(path string, maxRecord, batchBytes int) (*Reader, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Reader{path: abs, maxRecord: maxRecord, batchBytes: batchBytes, generation: 1}, nil
+	return &Reader{id: rand.Text(), path: abs, maxRecord: maxRecord, batchBytes: batchBytes, generation: 1}, nil
 }
 
 func (r *Reader) Location() Source {
-	return Source{Kind: "jsonl", Path: r.path, Generation: r.generation, Offset: r.lineStart, EndOffset: r.offset}
+	return Source{ReaderID: r.id, Kind: "jsonl", Path: r.path, Generation: r.generation, Offset: r.lineStart, EndOffset: r.offset}
 }
 
 // Freeze limits inspection to the byte size at the first successful open.
@@ -217,9 +222,10 @@ func (r *Reader) ReadBatch() (Batch, error) {
 					r.lineStart = r.offset
 				} else if !r.discarding {
 					if len(r.pending) == r.maxRecord {
+						header := readPartialHeader(r.pending)
 						r.pending = nil
 						r.discarding = true
-						b.Records = append(b.Records, Record{Source: r.Location(), Diagnostic: "record.oversized"})
+						b.Records = append(b.Records, Record{Source: r.Location(), Diagnostic: "record.oversized", Header: header})
 					} else {
 						r.pending = append(r.pending, c)
 					}

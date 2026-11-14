@@ -1,8 +1,12 @@
 /bin/
 /coverage.out
 /test-results/
+/node_modules/
+/playwright-report/
+/dist/
 *.test
 .DS_Store
+.idea/
 
 # Local credentials, state, and native agent artifacts are never source files.
 .env

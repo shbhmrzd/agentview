@@ -63,22 +63,35 @@ export function relatedSessions(sessions, selectedID) {
   return queue.sort((a,b) => Number(!!a.context?.parent_thread_id) - Number(!!b.context?.parent_thread_id) || a.id.localeCompare(b.id));
 }
 
-export function resolveTarget(sessions, current, target) {
-  if (!target) return null;
-  const matches = sessions.filter(s => s.agent === current?.agent && [s.session_id, s.context?.agent_id, s.context?.agent_path, s.context?.name].includes(target));
-  if (matches.length) return matches.length === 1 ? matches[0] : null;
-  const family = relatedSessions(sessions, current?.id);
-  // Native Codex logs can omit the root path while child metadata records
-  // both /root/child and its parent thread ID. Resolve that exact parent edge.
-  const parentIDs = new Set(family.filter(s => s.context?.agent_path?.slice(0,s.context.agent_path.lastIndexOf('/')) === target).map(s => s.context?.parent_thread_id).filter(Boolean));
-  const candidates = family.filter(s => parentIDs.has(s.session_id) || (!target.includes('/') && s.context?.agent_path?.split('/').pop() === target));
-  return candidates.length === 1 ? candidates[0] : null;
+// Native IDs can be provider-wide; paths and names are family-local.
+export function resolveReference(sessions, current, target, type = 'auto', direct = false) {
+  if (!target || !current) return {status:'unavailable', session:null};
+  const candidates = direct ? sessions.filter(s => s.agent === current.agent && s.id !== current.id && s.context?.parent_thread_id === current.session_id) : relatedSessions(sessions, current.id);
+  const unique = matches => ({status:matches.length === 1 ? 'resolved' : matches.length ? 'ambiguous' : 'unavailable', session:matches.length === 1 ? matches[0] : null});
+  if (type !== 'path') {
+    const ids = (direct ? candidates : sessions.filter(s => s.agent === current.agent)).filter(s => [s.session_id,s.context?.agent_id].includes(target));
+    if (ids.length || type === 'id') return unique(ids);
+  }
+  const names=candidates.filter(s => [s.context?.agent_path,s.context?.name].includes(target));
+  if(names.length) return unique(names);
+  if (direct) return unique([]);
+  const parentIDs = new Set(candidates.filter(s => s.context?.agent_path?.slice(0,s.context.agent_path.lastIndexOf('/')) === target).map(s => s.context?.parent_thread_id).filter(Boolean));
+  return unique(candidates.filter(s => parentIDs.has(s.session_id) || (!target.includes('/') && s.context?.agent_path?.split('/').pop() === target)));
 }
+export function resolveTarget(sessions, current, target) {return resolveReference(sessions,current,target).session;}
 
 export function filterEvents(events, kind, query) {
   const needle = query.trim().toLowerCase();
-  return events.filter(e => (kind === 'all' || (kind === 'coordination' ? !!e.coordination : e.kind.startsWith(kind))) &&
-    (!needle || [e.content, e.tool, e.call_id, e.coordination?.target].some(v => (v || '').toLowerCase().includes(needle))));
+  return events.filter(e => (kind === 'all' || (kind === 'failures' ? (e.error || e.outcome?.status === 'failure') : kind === 'coordination' ? (!!e.coordination || !!e.communication) : e.kind.startsWith(kind))) &&
+    (!needle || [e.content, e.tool, e.call_id, e.detail, e.coordination?.target, e.communication?.author, e.communication?.recipient].some(v => (v || '').toLowerCase().includes(needle))));
+}
+
+export function linkedChildren(sessions, parent, result) {
+  const children=new Set();
+  for(const [refs,type] of [[result.related_agent_ids || [],'id'],[result.related_agent_paths || [],'path']]) {
+    for(const ref of refs) {const resolved=resolveReference(sessions,parent,ref,type,true);if(resolved.session)children.add(resolved.session);}
+  }
+  return [...children];
 }
 
 // Group IDs collect related sources; only an unambiguous parent ID nests them.

@@ -1,4 +1,4 @@
-import {visibleSessions, prettyContent, age, relatedSessions, resolveTarget, filterEvents, sessionActivity, agentForest} from './helpers.mjs';
+import {visibleSessions, prettyContent, age, relatedSessions, resolveTarget, filterEvents, sessionActivity, agentForest, linkedChildren} from './helpers.mjs';
 import {createTour} from './tour.mjs';
 import {groupConversations, visibleConversations, conversationActivity, shortID} from './conversations.mjs';
 
@@ -9,6 +9,7 @@ try { token ||= sessionStorage.getItem('agentview-token') || ''; if (fragment.ha
 if (fragment.has('token')) history.replaceState(null, '', location.pathname);
 let snapshot = {sessions: [], roots: [], diagnostics: {}}, provider = 'all', selected = '', mode = 'history';
 let historyController, historyVersion = 0, currentHistory = null, currentLive = [], lastTimeline = '', lastRows = '', connected = false;
+let previousPages = [], forwardPages = [], historyLoading = false, historyError = '', historyRecovery = '', historyQuery = {}, searchProgress = '';
 let detailedSession = null, currentTree = null;
 let inventory = groupConversations([]), listMode = 'conversations';
 let tourStorage, everConnected = false;
@@ -18,10 +19,22 @@ const tour = createTour({document, storage: tourStorage, getContext: () => ({ses
 function element(tag, className, text) { const el = document.createElement(tag); if (className) el.className = className; if (text != null) el.textContent = text; return el; }
 async function api(path, signal) {
   const response = await fetch(path, {headers: {Authorization: `Bearer ${token}`}, cache: 'no-store', signal});
-  if (!response.ok) throw new Error(await response.text());
+  if (!response.ok) {
+    const body = await response.text();
+    let detail; try { detail = JSON.parse(body).error; } catch { /* Plain HTTP errors remain readable. */ }
+    const error = new Error(detail?.message || body || `HTTP ${response.status}`);
+    error.status = response.status; error.code = detail?.code;
+    error.recovery = detail?.recovery || (response.status === 409 ? 'refresh' : 'retry');
+    throw error;
+  }
   return response.json();
 }
-function notice(text) { $('notice').textContent = text; $('notice').hidden = !text; }
+const notices = {action: '', connection: '', live: '', metadata: ''};
+function notice(text, channel = 'action') {
+  notices[channel] = text;
+  $('notice').textContent = Object.values(notices).filter(Boolean).join(' ');
+  $('notice').hidden = !$('notice').textContent;
+}
 function session() { return detailedSession?.id === selected ? detailedSession : snapshot.sessions.find(s => s.id === selected); }
 function number(n) { return n == null ? 'Unavailable' : new Intl.NumberFormat().format(n); }
 function agentName(s) { return s.context?.agent_path?.split('/').filter(Boolean).pop() || s.context?.name || s.context?.agent_id || (s.context?.parent_thread_id ? (s.session_id ? `${s.session_id.slice(0, 8)}…${s.session_id.slice(-4)}` : 'Child agent') : 'Main agent'); }
@@ -46,7 +59,7 @@ function renderFamily() {
     if (s.context?.parent_thread_id && !family.some(a => a.session_id === s.context.parent_thread_id)) pane.append(element('span', 'muted', `Parent ${s.context.parent_thread_id.slice(0, 12)} is not in observed sources.`));
   }
   const m = s.metrics, strip = $('metric-strip'); strip.replaceChildren();
-  for (const [label, value] of [['Reported tokens', number(m.usage?.total_tokens)], ['Tool calls', number(m.tool_calls)], ['Flagged errors', number(m.reported_errors)], ['Model', s.context?.model || 'Not recorded']]) {
+  for (const [label, value] of [['Reported tokens', number(m.usage?.total_tokens)], ['Tool calls', number(m.tool_calls)], ['Failure evidence', `${number(m.failure_evidence)} · ${number(m.unknown_outcomes || 0)} unknown tool outcomes`], ['Model', s.context?.model || 'Not recorded']]) {
     const metric = element('div', 'metric'); metric.append(element('span', '', label), element('strong', '', value)); strip.append(metric);
   }
 }
@@ -54,7 +67,7 @@ function renderFamily() {
 function metricRow(label, value) { const row = element('div', 'metric-row'); row.append(element('span', '', label), element('strong', '', value)); return row; }
 function renderMetrics(pane) {
   const s = session(), m = s.metrics, u = m.usage || {};
-  $('view-note').textContent = `Metrics from indexed records in source generation ${s.generation}. ${s.status === 'indexing' ? 'Indexing is still in progress. ' : ''}${m.partial ? 'Some records/correlations were omitted; counts are partial. ' : ''}These are source observations, not billing or correctness scores.`;
+  $('view-note').textContent = `Metrics from indexed records in source generation ${s.generation} (${s.reader_id || 'reader unspecified'}). ${m.unsupported_records || 0} unsupported records; metrics cover decoded evidence only. ${s.status === 'indexing' ? 'Indexing is still in progress. ' : ''}${m.partial ? 'Some records/correlations were omitted; counts are partial. ' : ''}These are source observations, not billing or correctness scores.`;
   pane.append(element('h3', '', 'Model & token usage'));
   for (const [label, value] of [['Model', s.context?.model || 'Not recorded'], ['Reasoning effort', s.context?.effort || 'Not recorded'], ['Context capacity', number(s.context?.context_window)], ['Input tokens (provider semantics)', number(u.input_tokens)], ['Cache read tokens', number(u.cached_input_tokens)], ['Cache write tokens', number(u.cache_write_input_tokens)], ['Output tokens', number(u.output_tokens)], ['Reasoning output tokens', number(u.reasoning_output_tokens)], ['Total tokens', number(u.total_tokens)], ['Usage source', m.usage_basis || 'Not recorded'], ['Usage recorded at', m.usage_at ? new Date(m.usage_at).toLocaleString() : 'Not recorded']]) pane.append(metricRow(label,value));
   pane.append(element('p', 'muted', 'Codex input includes cached reads. Claude input excludes cache reads and writes. Cumulative counters are replaced, never summed; inherited fork history can be included. No cross-agent billing total is inferred.'));
@@ -63,9 +76,11 @@ function renderMetrics(pane) {
     pane.append(metricRow(name, `${tool.calls} calls · ${tool.results} paired results · ${tool.errors} flagged errors${tool.timed ? ` · ${Math.round(tool.total_ms/tool.timed)} ms mean recorded gap (${tool.timed} pairs)` : ''}`));
   }
   if (!Object.keys(m.tools || {}).length) pane.append(element('p', 'muted', 'No tool calls indexed.'));
-  pane.append(element('p', 'muted', 'Time is the gap between recorded call and result timestamps, not model latency or pure tool execution time. Errors count only explicit provider error flags; zero does not prove success.'));
+  pane.append(element('p', 'muted', 'Time is the gap between recorded call and result timestamps, not model latency or pure tool execution time. Failures count supported error flags or recorded process exits. Unknown outcomes remain unknown; a nonzero process exit does not establish overall task failure.'));
   pane.append(element('h3', '', 'Outcome & relationships'));
-  pane.append(metricRow('Last recorded turn event', m.last_turn || 'Not recorded'), metricRow('Message blocks', number(m.messages)), metricRow('Turns started', number(m.turns)), metricRow('Accuracy / task success', 'Unavailable — requires evaluation evidence'), metricRow('Cost', 'Unavailable — no billing data'), metricRow('Process state', 'Unknown'), metricRow('Parent thread', s.context?.parent_thread_id || 'Not recorded'), metricRow('Relationship evidence', s.parent_evidence || 'Not recorded'));
+  pane.append(metricRow('Last recorded turn event', m.last_turn || 'Not recorded'), metricRow('Message blocks', number(m.messages)), metricRow('Turns started', number(m.turns)), metricRow('Accuracy / task success', 'Unavailable — requires evaluation evidence'), metricRow('Estimated cost (provider report)', m.reported_stats?.estimated_cost_usd == null ? 'Not recorded' : `$${m.reported_stats.estimated_cost_usd.toFixed(4)}`), metricRow('Process state', 'Unknown'), metricRow('Parent thread', s.context?.parent_thread_id || 'Not recorded'), metricRow('Relationship evidence', s.parent_evidence || 'Not recorded'));
+  for (const [label, value] of [['Unknown tool outcomes', m.unknown_outcomes], ['Compaction boundaries', m.compactions], ['Hook failures', m.hook_errors], ['API errors', m.api_errors], ['Reported API duration (ms)', m.reported_stats?.api_duration_ms], ['Reported API duration excluding retries (ms)', m.reported_stats?.api_without_retries_ms], ['Reported tool duration (ms)', m.reported_stats?.tool_duration_ms]]) pane.append(metricRow(label, number(value)));
+  pane.append(element('p', 'muted', 'API durations are provider-reported cumulative totals. Their difference is not evidence of a specific retry cause.'));
   pane.append(metricRow('Inherited context records omitted', number(m.inherited_records)));
   for (const [label, value] of [['Agent path', s.context?.agent_path], ['Agent nickname', s.context?.name], ['Agent role', s.context?.role], ['Native agent ID', s.context?.agent_id]]) if (value) pane.append(metricRow(label,value));
   if (s.context?.forked_from_id) {
@@ -75,10 +90,41 @@ function renderMetrics(pane) {
   }
 }
 
+function eventTime(e) { return e.time ? new Date(e.time).toLocaleTimeString() : 'Time unknown'; }
 function provenance(e) {
-  const details = element('details', 'provenance'); details.append(element('summary', '', 'Record provenance'));
-  details.append(element('pre', '', `${e.native_type || e.kind}\n${e.source?.path || ''}\nGeneration ${e.source?.generation ?? '?'} · bytes ${e.source?.offset ?? '?'}–${e.source?.end_offset ?? '?'}\n${e.time || 'No source timestamp'} · ${e.phase || 'phase unavailable'}${e.call_id ? `\nCall ID: ${e.call_id}` : ''}`));
+  const details = element('details', 'provenance'); details.dataset.key = `provenance:${e.id || e.sequence}`; details.append(element('summary', '', 'Record provenance'));
+  details.append(element('pre', '', `${e.native_type || e.kind}\n${e.source?.path || ''}\nReader ${e.source?.reader_id || 'unspecified'} · local generation ${e.source?.generation ?? '?'} · bytes ${e.source?.offset ?? '?'}–${e.source?.end_offset ?? '?'}\n${e.time || 'Source time unknown'} (${e.time_status || 'unknown'})\nObserved/read at: ${e.observed_at || 'unknown'} · ${e.phase || 'phase unavailable'}${e.call_id ? `\nCall ID: ${e.call_id}` : ''}`));
   return details;
+}
+
+function appendEvidence(pane, e, parent = session()) {
+  if (e.request) {
+    const request=element('details','paired-request'); request.dataset.key = `paired:${parent?.id}:${e.id || e.sequence}`;
+    request.append(element('summary','','Matched input payload'),element('pre','',e.request.captured ? prettyContent(e.request.content) : 'Content hidden'),provenance(e.request));
+    if(e.request.clipped) request.append(element('p','muted','Request excerpt capped at 1 KiB; its history page contains the full supported payload.'));
+    pane.append(request);
+  }
+  if (e.call_id && parent) {
+    if (e.kind === 'tool.requested') pane.append(evidenceButton('Find result', parent, {call:e.call_id, kind:'tool.result'}));
+    if (e.kind === 'tool.result') {
+      pane.append(evidenceButton('Open full request', parent, {call:e.call_id, kind:'tool.requested'}));
+      pane.append(evidenceButton('Find following reply', parent, {after_call:e.call_id}));
+    }
+  }
+  if (e.outcome) pane.append(element('p', 'outcome', `Outcome: ${e.outcome.status}${e.outcome.exit_code != null ? ` · exit ${e.outcome.exit_code}` : ''} · ${e.outcome.basis}`));
+  if (e.gap) pane.append(element('p','tree-caution',e.gap));
+  if (e.preceding_calls?.length) {
+    pane.append(element('p','muted',`Next recorded assistant message after results: ${e.preceding_calls.join(', ')}. Chronology does not prove the results were used.`));
+    for (const callID of e.preceding_calls) pane.append(evidenceButton(`Find result ${callID}`, parent, {call:callID, kind:'tool.result'}));
+  }
+  if(e.communication) {
+    pane.append(element('p','coordination',`${e.communication.author || 'Unknown sender'} → ${e.communication.recipient || 'Unknown recipient'} · ${e.communication.evidence}`));
+    for (const [label,id] of [['Open sender',e.communication.author],['Open recipient',e.communication.recipient]]) { const target=resolveTarget(snapshot.sessions,parent,id);if(target){const b=element('button','agent-node',label);b.onclick=()=>navigateAgent(target.id);pane.append(b);} }
+  }
+  const related = linkedChildren(currentTree?.sessions || snapshot.sessions, parent, e);
+  for (const child of related) { const b=element('button','agent-node','Open linked child →');b.onclick=()=>navigateAgent(child.id);pane.append(b); }
+  if ((e.related_agent_ids?.length || e.related_agent_paths?.length) && !related.length) pane.append(element('p','tree-caution','Spawn returned a child reference, but no unique child source with this parent is available.'));
+
 }
 
 function renderSources() {
@@ -178,45 +224,50 @@ function renderHeading() {
   $('metrics-tab').classList.toggle('active', mode === 'metrics');
   $('agents-tab').classList.toggle('active', mode === 'agents');
   $('trace-filters').hidden = mode === 'metrics' || mode === 'agents';
+  $('clear-session-search').hidden = !Object.keys(historyQuery).length;
+  $('cancel-history').hidden = !historyLoading;
   renderFamily();
 }
 
 function renderTimeline(force = false) {
   renderHeading();
   let entries = filterEvents(mode === 'history' ? currentHistory?.events || [] : currentLive, $('event-type').value, $('trace-search').value);
-  const signature = JSON.stringify([selected, mode, entries, currentHistory?.read_at, currentHistory?.error, mode === 'metrics' ? session()?.metrics : null, mode === 'agents' ? [currentTree, connected, currentTree?.sessions?.map(s => sessionActivity(s, connected).kind)] : null]);
+  const signature = JSON.stringify([selected, mode, entries, currentHistory?.read_at, currentHistory?.error, historyLoading, historyError, searchProgress, historyQuery, mode === 'metrics' ? session()?.metrics : null, mode === 'agents' ? [currentTree, connected, currentTree?.sessions?.map(s => sessionActivity(s, connected).kind)] : null]);
   if (!force && signature === lastTimeline) return;
   lastTimeline = signature;
   const pane = $('timeline');
   const atBottom = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 70;
   const scroll = pane.scrollTop;
-  const openTools = new Set([...pane.querySelectorAll('details[open]')].map(x => x.dataset.key));
-  const treeExpansion = new Map([...pane.querySelectorAll('.tree-node, .tree-inspect, .tree-message')].map(x => [x.dataset.key, x.open]));
+  const treeExpansion = new Map([...pane.querySelectorAll('details[data-key]')].map(x => [x.dataset.key, x.open]));
+  const restoreExpansion = () => { for (const node of pane.querySelectorAll('details[data-key]')) if (treeExpansion.has(node.dataset.key)) node.open = treeExpansion.get(node.dataset.key); };
   const focused = document.activeElement;
+  const pageFocus = ['next-history','previous-history'].includes(focused.id) ? focused.id : '';
   const focusedTreeKey = pane.contains(focused) ? focused.closest('details')?.dataset.key : null;
   const focusedTreeAction = focused.classList?.contains('tree-open') ? '.tree-open' : ':scope > summary';
   pane.replaceChildren();
   if (mode === 'agents') {
-    renderAgentTree(pane, treeExpansion); pane.scrollTop = force ? 0 : scroll;
+    renderAgentTree(pane, treeExpansion); restoreExpansion(); pane.scrollTop = force ? 0 : scroll;
     if (focusedTreeKey) [...pane.querySelectorAll('details[data-key]')].find(node => node.dataset.key === focusedTreeKey)?.querySelector(focusedTreeAction)?.focus({preventScroll:true});
     return;
   }
   if (mode === 'metrics') { renderMetrics(pane); pane.scrollTop = force ? 0 : scroll; return; }
   if (mode === 'history') {
-    $('view-note').textContent = !currentHistory ? 'Reading a bounded history snapshot… Live observation continues.' : currentHistory.error || `History snapshot · ${new Date(currentHistory.read_at).toLocaleTimeString()} · ${entries.length} events${currentHistory.dropped ? ` (latest 200; ${currentHistory.dropped} earlier events omitted)` : ''}${currentHistory.diagnostics ? ` · ${currentHistory.diagnostics} diagnostic records omitted` : ''}. Live activity is in the next tab.${currentHistory.limited ? ' Read limit reached: only the first 64 MiB were inspected; later history is missing.' : ''}`;
+    const omitted = Object.values(currentHistory?.diagnostic_counts || {}).reduce((a,b) => a+b, 0);
+    $('view-note').textContent = !currentHistory ? (historyError ? 'History could not be read. Use Refresh history to retry.' : 'Reading history…') : currentHistory.error || `History page ${currentHistory.page} · ${entries.length} displayed events · ${omitted} diagnostics in this page scan. ${currentHistory.next_cursor ? 'More history available below.' : 'Reached the initial file boundary.'} ${currentHistory.searching ? `Session search: ${currentHistory.scanned} records scanned; matching events in source order. A following reply is chronology, not acknowledgement.` : 'Filters apply to this page. Use Search session to scan the full source.'}`;
+    if (searchProgress) $('view-note').textContent += ` ${searchProgress}`;
   } else {
     $('view-note').textContent = `Activity observed since ${new Date(snapshot.started_at).toLocaleTimeString()} · latest ${entries.length} retained events. New files include their existing records; source replacements start a fresh timeline.`;
   }
-  if (!entries.length) pane.append(element('p', 'muted', $('event-type').value !== 'all' || $('trace-search').value ? 'No events match these trace filters.' : mode === 'history' ? (!currentHistory ? 'Loading conversation…' : currentHistory.error ? 'Use Refresh history to retry.' : 'No supported conversation events in this snapshot.') : 'Waiting for new activity. Send a message in your agent to see updates here. Earlier messages are available under History.'));
-  const toolNames = new Map();
+  if (mode === 'history' && historyError) { const error=element('p','tree-caution',historyError);error.setAttribute('role','alert');pane.append(error); }
+  if (!entries.length) pane.append(element('p', 'muted', $('event-type').value !== 'all' || $('trace-search').value ? 'No events match these trace filters.' : mode === 'history' ? (!currentHistory ? (historyError ? 'Use Refresh history to retry.' : 'Loading conversation…') : currentHistory.error ? 'Use Refresh history to retry.' : 'No displayable events on this page. Continue with Next page when available.') : 'Waiting for new activity. Send a message in your agent to see updates here. Earlier messages are available under History.'));
   for (const [index, e] of entries.entries()) {
-    if (e.tool && e.call_id) toolNames.set(e.call_id, e.tool);
-    if (e.kind.startsWith('turn.')) { pane.append(element('div', 'turn', `${e.kind.replace('turn.', 'Turn ')} · ${new Date(e.time).toLocaleTimeString()}`)); continue; }
+    if (e.kind.startsWith('turn.')) { pane.append(element('div', 'turn', `${e.kind.replace('turn.', 'Turn ')} · ${eventTime(e)}`)); continue; }
     if (e.kind.startsWith('tool.')) {
       const details = element('details', `tool ${e.kind === 'tool.requested' ? 'tool-request' : 'tool-result'} ${e.error ? 'error' : ''}`);
-      details.dataset.key = `${selected}:${mode}:${e.sequence || index}`;
-      details.open = openTools.has(details.dataset.key);
-      details.append(element('summary', '', `${e.kind === 'tool.requested' ? '↗ Tool call' : '↙ Tool result'} · ${e.tool || toolNames.get(e.call_id) || e.call_id || 'tool'}${e.error ? ' · error' : ''}${e.duration_ms != null ? ` · ${e.duration_ms} ms recorded gap` : ''}`), element('div', 'payload-label', e.kind === 'tool.requested' ? 'Input payload' : 'Recorded result'), element('pre', '', e.captured ? prettyContent(e.content) : 'Payload hidden. Restart with --include-content to inspect it.'));
+      details.dataset.key = `${selected}:${mode}:${e.id || e.sequence || index}`;
+      details.dataset.callID=e.call_id || '';details.dataset.kind=e.kind;
+      details.open = treeExpansion.get(details.dataset.key) || false;
+      details.append(element('summary', '', `${e.kind === 'tool.requested' ? '↗ Tool call' : '↙ Tool result'} · ${e.tool || e.call_id || 'tool'}${e.error ? ' · error' : ''}${e.duration_ms != null ? ` · ${e.duration_ms} ms recorded gap` : ''}`), element('div', 'payload-label', e.kind === 'tool.requested' ? 'Input payload' : 'Recorded result'), element('pre', '', e.captured ? prettyContent(e.content) : 'Payload hidden. Restart with --include-content to inspect it.'));
       if (e.coordination) {
         const target = resolveTarget(snapshot.sessions, session(), e.coordination.target);
         const row = element('div', 'coordination', `Coordination request · ${e.coordination.operation}${e.coordination.target ? ` → ${e.coordination.target}` : ''}. Delivery is not established by this call.`);
@@ -224,40 +275,93 @@ function renderTimeline(force = false) {
         else if (e.coordination.target) row.append(element('span', 'muted', ' Recipient not uniquely identified in observed sources.'));
         details.append(row);
       }
+      appendEvidence(details, e);
       details.append(provenance(e));
       if (e.clipped) details.append(element('p', 'clipped', 'Display limited to 8 KiB.'));
       pane.append(details); continue;
     }
+    if (!e.kind.startsWith('message.')) { const card = element('article', 'event'); card.append(element('h3', '', e.kind), element('p', '', e.detail || e.communication?.evidence || ''), element('pre', '', e.captured ? prettyContent(e.content) : 'Content not captured')); appendEvidence(card, e); card.append(provenance(e)); pane.append(card); continue; }
     const isUser = e.kind === 'message.user';
     const article = element('article', `event ${isUser ? 'user' : 'assistant'}`), meta = element('div', 'event-meta');
-    meta.append(element('span', 'event-icon', isUser ? 'U' : 'A'), element('strong', '', isUser ? 'You' : session()?.agent === 'claude' ? 'Claude' : 'Codex'), element('time', '', new Date(e.time).toLocaleTimeString()));
+    meta.append(element('span', 'event-icon', isUser ? 'U' : 'A'), element('strong', '', isUser ? 'You' : session()?.agent === 'claude' ? 'Claude' : 'Codex'), element('time', '', eventTime(e)));
     article.append(meta, element('div', 'event-content', e.captured ? e.content : 'Message content hidden. Restart with --include-content to read messages.'));
+    appendEvidence(article, e);
     article.append(provenance(e));
     if (e.clipped) article.append(element('p', 'clipped', 'Display limited to 8 KiB.'));
     pane.append(article);
   }
-  if (force || (mode === 'live' && atBottom)) pane.scrollTop = pane.scrollHeight; else pane.scrollTop = scroll;
+  if (mode === 'history' && currentHistory && !currentHistory.error) {
+    const nav = element('div', 'history-navigation');
+    if (previousPages.length) {
+      const b = element('button','agent-node','Previous page'); b.id='previous-history';b.setAttribute('aria-disabled',String(historyLoading));
+      b.onclick=()=>{if(historyLoading)return;historyError='';forwardPages.push(currentHistory);currentHistory=previousPages.pop();renderTimeline(true);};nav.append(b);
+    }
+    if (currentHistory.next_cursor && (historyRecovery !== 'refresh' || forwardPages.length)) {
+      const b=element('button','agent-node','Next page'); b.id='next-history';b.setAttribute('aria-disabled',String(historyLoading));
+      b.onclick=()=>{if(historyLoading)return;if(forwardPages.length){historyError='';previousPages.push(currentHistory);currentHistory=forwardPages.pop();renderTimeline(true);}else loadHistory(currentHistory.next_cursor);};nav.append(b);
+    }
+    const coverage=element('details','provenance'); coverage.append(element('summary','','History coverage'),element('p','',currentHistory.coverage),element('pre','',JSON.stringify(currentHistory.diagnostic_counts,null,2)));
+    pane.append(nav,coverage);
+  }
+  restoreExpansion();
+  if (pageFocus) {
+    const target=$(pageFocus) || $('previous-history') || $('next-history') || $('refresh-history');
+    target.tabIndex=target.tagName==='BUTTON' ? 0 : -1;target.focus({preventScroll:true});
+  }
+  if (force && mode === 'history') pane.scrollTop = 0; else if (force || (mode === 'live' && atBottom)) pane.scrollTop = pane.scrollHeight; else pane.scrollTop = scroll;
 }
 
-async function loadHistory() {
+async function loadHistory(cursor = '') {
+  if (typeof cursor !== 'string') cursor = '';
+  const old = currentHistory;
+  let advanced = false;
+  const pageFocus = ['next-history','previous-history'].includes(document.activeElement.id) ? document.activeElement.id : '';
   historyController?.abort(); historyController = new AbortController();
   const version = ++historyVersion, id = selected;
-  currentHistory = null; renderTimeline(true);
+  historyLoading = true; historyError = ''; historyRecovery = ''; searchProgress = ''; renderTimeline();
   try {
-    const value = await api(`/api/history?id=${encodeURIComponent(id)}`, historyController.signal);
+    const diagnostics = {};
+    let value, next = cursor;
+    do {
+      const params = new URLSearchParams({id, ...(next ? {cursor:next} : historyQuery)});
+      value = await api(`/api/history?${params}`, historyController.signal);
+      if (version !== historyVersion || id !== selected) return;
+      for (const [kind,count] of Object.entries(value.diagnostic_counts || {})) diagnostics[kind] = (diagnostics[kind] || 0) + count;
+      next = value.next_cursor;
+      searchProgress = value.searching ? `Scanned ${value.scanned} records…` : '';
+      if (value.searching && !value.events.length && next) { advanced = true; renderTimeline(); }
+    } while (value.searching && !value.events.length && next);
+    value.diagnostic_counts = diagnostics;
     if (version !== historyVersion || id !== selected) return;
-    currentHistory = value; if (mode === 'history') renderTimeline(true);
+    if (cursor && old) { previousPages.push(old); if(previousPages.length>8)previousPages.shift(); }
+    if (!cursor) { previousPages=[]; forwardPages=[]; }
+    currentHistory = value;
   } catch (error) {
-    if (error.name === 'AbortError' || version !== historyVersion) return;
-    currentHistory = {events: [], error: error.message}; if (mode === 'history') renderTimeline(true);
+    if (version !== historyVersion || id !== selected) return;
+    historyRecovery = error.recovery === 'refresh' || !cursor || advanced ? 'refresh' : 'retry';
+    if (error.name === 'AbortError') error = new Error('Read canceled.');
+    historyError = `${error.message.trim()} Your current history page is preserved. ${historyRecovery === 'refresh' ? 'Use Refresh history to start a new read.' : 'Retry with Next page.'}`;
+  } finally {
+    if (version === historyVersion && id === selected) {
+      historyLoading = false; searchProgress = '';
+      if (mode === 'history') {
+        renderTimeline(true);
+        if (pageFocus && (document.activeElement === document.body || document.activeElement.id === pageFocus)) {
+          const target=$(pageFocus) || $('previous-history') || $('next-history') || $('refresh-history');
+          target.tabIndex=target.tagName==='BUTTON' ? 0 : -1;target.focus({preventScroll:true});
+        }
+      }
+    }
   }
 }
+
 function selectSession(id, view) {
+  previousPages=[];forwardPages=[];historyLoading=false;historyError='';historyRecovery='';historyQuery={};searchProgress='';notice('');notice('','live');
   selected = id; mode = view || (mode === 'live' || $('window').value === 'updates' ? 'live' : 'history'); currentLive = []; lastTimeline = ''; currentHistory = null; detailedSession = null; currentTree = null;
   historyController?.abort(); historyVersion++;
   $('event-type').value = 'all'; $('trace-search').value = '';
   renderList(); renderTimeline(true);
-  if (mode === 'history') loadHistory(); else if (mode === 'agents') loadAgentTree(); else loadLive().catch(error => notice(error.message));
+  if (mode === 'history') loadHistory(); else if (mode === 'agents') loadAgentTree(); else loadLive().catch(error => notice(error.message, 'live'));
 }
 
 function renderAgentTree(pane, expansion) {
@@ -295,6 +399,11 @@ function renderAgentTree(pane, expansion) {
       message.append(provenance(entry)); information.append(message);
     }
     information.append(element('p', 'muted', `Last recorded turn: ${s.metrics?.last_turn || 'unavailable'}. The first request may include inherited context where the source does not identify its boundary; it is not a verified spawn instruction.`));
+    if (s.delegations_omitted) information.append(element('p','tree-caution',`${s.delegations_omitted} older delegation links omitted from the tree cache; their source records remain available through History.`));
+    const parent = node.parent?.session;
+    const links = parent?.delegations?.filter(d => linkedChildren(currentTree.sessions, parent, d.result).some(child => child.id === s.id)) || [];
+    for (const link of links) { const card=element('details','tool');card.dataset.key=`spawn:${s.id}:${link.result.id}`;card.append(element('summary','','Recorded spawn request & result'),element('pre','',link.result.captured ? prettyContent(link.result.content) : 'Content hidden'));appendEvidence(card,link.result,parent);information.append(card); }
+    if (parent && !links.length) information.append(element('p','tree-caution','Spawn call/result is not linked to this child in retained evidence. The first request above is not a verified spawn instruction.'));
     body.append(information);
     const open = element('button', 'tree-open', 'Open trace →');
     open.addEventListener('click', () => { mode = 'history'; navigateAgent(s.id); }); body.append(open); details.append(body); item.append(details);
@@ -326,6 +435,7 @@ async function loadLive() {
   const id = selected; if (!id) return;
   const result = await api(`/api/session?id=${encodeURIComponent(id)}`);
   if (id !== selected) return;
+  notice('', 'live');
   detailedSession = result.session;
   currentLive = result.events; renderHeading(); if (mode === 'live' || mode === 'metrics') renderTimeline();
 }
@@ -355,7 +465,7 @@ function showUpdatedActivity() {
   const family = inventory.bySource.get(selected);
   mode = listMode === 'conversations' && (family?.source_count > 1 || family?.main_missing) ? 'agents' : 'live';
   renderTimeline(true);
-  if (mode === 'agents') loadAgentTree(); else loadLive().catch(error => notice(error.message));
+  if (mode === 'agents') loadAgentTree(); else loadLive().catch(error => notice(error.message, 'live'));
 }
 $('window').addEventListener('change', () => {
   if ($('window').value === 'updates') showUpdatedActivity(); else renderList();
@@ -366,7 +476,24 @@ $('metrics-tab').addEventListener('click', () => { mode = 'metrics'; renderTimel
 $('agents-tab').addEventListener('click', () => { mode = 'agents'; renderTimeline(true); loadAgentTree(); });
 $('event-type').addEventListener('change', () => renderTimeline(true));
 $('trace-search').addEventListener('input', () => renderTimeline(true));
-$('live-tab').addEventListener('click', () => { mode = 'live'; renderTimeline(true); loadLive().catch(error => notice(error.message)); });
+$('live-tab').addEventListener('click', () => { mode = 'live'; renderTimeline(true); loadLive().catch(error => notice(error.message, 'live')); });
+
+function evidenceButton(label, source, query) {
+  const button = element('button', 'agent-node', label);
+  button.onclick = () => searchSession(query, source.id);
+  return button;
+}
+function searchSession(query, id = selected) {
+  if (!id) return;
+  if (id !== selected) { selected=id; detailedSession=null; currentLive=[]; currentTree=null; currentHistory=null; previousPages=[]; forwardPages=[]; }
+  historyQuery = query; mode = 'history';
+  $('event-type').value='all'; $('trace-search').value='';
+  renderList(); loadHistory();
+}
+$('search-session').addEventListener('click', () => searchSession({query:$('trace-search').value, kind:$('event-type').value}));
+$('clear-session-search').addEventListener('click', () => searchSession({}));
+$('cancel-history').addEventListener('click', () => { historyController?.abort(); });
+
 $('refresh-history').addEventListener('click', loadHistory);
 $('diagnostics-button').addEventListener('click', () => { $('diagnostics').showModal(); renderDiagnostics(); });
 $('close-diagnostics').addEventListener('click', () => $('diagnostics').close());
@@ -375,14 +502,27 @@ async function poll() {
   try {
     snapshot = await api('/api/sessions'); inventory = groupConversations(snapshot.sessions); connected = true; everConnected = true;
     $('connection').textContent = 'Connected · local observer'; $('connection').className = 'connected';
-    notice(snapshot.include_content ? '' : 'Metadata-only view. Start AgentView with --include-content to read messages and tool payloads.');
+    notice('', 'connection');
+    notice(snapshot.include_content ? '' : 'Metadata-only view. Start AgentView with --include-content to read messages and tool payloads.', 'metadata');
     renderList(); renderHeading(); renderDiagnostics(); tour.maybeStart(); await loadLive(); if (mode === 'metrics') renderTimeline(); if (mode === 'agents') await loadAgentTree();
   } catch (error) {
     connected = false;
     $('connection').textContent = everConnected ? 'Disconnected · retrying' : 'Not connected'; $('connection').className = 'error';
     renderList(); renderHeading();
     if (mode === 'agents') renderTimeline();
-    notice(error.message || 'Cannot reach the local observer. Keep agentview serve running.');
+    notice(error.message || 'Cannot reach the local observer. Keep agentview serve running.', 'connection');
   } finally { setTimeout(poll, 1000); }
 }
 poll();
+
+$('export-investigation').addEventListener('click', async () => {
+  if (!selected) return;
+  const button=$('export-investigation');button.disabled=true;
+  try {
+    const response=await fetch(`/api/export?id=${encodeURIComponent(selected)}`,{headers:{Authorization:`Bearer ${token}`},cache:'no-store'});
+    if(!response.ok)throw new Error(await response.text());
+    const blob=await response.blob(), url=URL.createObjectURL(blob),link=element('a');
+    link.href=url;link.download='agentview-evidence.jsonl';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+    notice('Export contains structural evidence only. Prompts, payloads and paths are removed; identifiers are aliased. Check the coverage footer for completeness.');
+  }catch(error){notice(error.message);}finally{button.disabled=false;}
+});

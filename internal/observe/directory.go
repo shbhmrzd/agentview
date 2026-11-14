@@ -73,12 +73,20 @@ func NewDirectory(options DirectoryOptions) (*Directory, error) {
 	if err != nil {
 		return nil, err
 	}
+	if options.Normalizer.EvidenceBudget == nil {
+		options.Normalizer.EvidenceBudget = NewEvidenceBudget(DefaultEvidenceBudget)
+	}
 	return &Directory{options: options, root: root, sources: make(map[string]*directorySource), maxSources: maxDirectorySources, maxEntries: maxDirectoryEntries}, nil
 }
 
 // Run validates the root, inventories it once, then reconciles it every poll.
 // Inspect freezes each source at discovery and never extends its initial set.
 func (d *Directory) Run(ctx context.Context, poll time.Duration, emit func(Event) error) error {
+	defer func() {
+		for _, source := range d.sources {
+			source.normalizer.Close()
+		}
+	}()
 	if poll < 100*time.Millisecond {
 		return fmt.Errorf("poll must be at least 100ms")
 	}
@@ -97,7 +105,9 @@ func (d *Directory) Run(ctx context.Context, poll time.Duration, emit func(Event
 	if err := d.scan(ctx, true, emit); err != nil {
 		return err
 	}
-	if err := d.notice("directory.ready", "Initial scan finished; source.ready marks each initialized source. Check directory diagnostics for incomplete coverage. Checkpoints are not persisted.", emit); err != nil {
+	// Ready marks the end of inventory, not healthy coverage. Consumers retain
+	// preceding scan diagnostics until an explicit directory.recovered event.
+	if err := d.notice("directory.ready", "Initial scan finished; source.ready marks each initialized source. Checkpoints are not persisted.", emit); err != nil {
 		return err
 	}
 	nextScan := time.Now().Add(poll)
@@ -358,10 +368,12 @@ func (d *Directory) readRound(ctx context.Context, emit func(Event) error) (bool
 				phase = "replacement_history"
 			}
 			events := s.normalizer.Normalize(record, time.Now())
-			if record.Diagnostic == "" && s.initial && d.options.History == "none" && phase == "history" {
-				continue
-			}
 			for _, event := range events {
+				// Suppress semantic history even when it shares an oversized envelope
+				// with a coverage diagnostic. Decoder context is still initialized.
+				if s.initial && d.options.History == "none" && phase == "history" && event.Kind != record.Diagnostic {
+					continue
+				}
 				event.ObservationPhase = phase
 				if err := emit(event); err != nil {
 					return false, err

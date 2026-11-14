@@ -101,6 +101,7 @@ func (s *Store) AgentTree(id string) (AgentTree, bool) {
 		}
 		copy := *item
 		copy.events = nil
+		copy.Delegations = append([]Delegation(nil), item.Delegations...)
 		copy.Metrics = item.Metrics.summary()
 		copy.Overview = item.overview.copy()
 		result.Sessions = append(result.Sessions, copy)

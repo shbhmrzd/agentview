@@ -33,6 +33,11 @@ if ! go test ./internal/observe -run '^$' -fuzz FuzzNormalize -fuzztime "${FUZZ_
   cat test-results/fuzz.txt
   exit 1
 fi
+printf '%s\n' 'Running stateful ownership fuzzing'
+if ! go test ./internal/observe -run '^$' -fuzz '^FuzzCompactionOwnership$' -fuzztime "${FUZZ_TIME:-10s}" -parallel 2 > test-results/fuzz-ownership.txt 2>&1; then
+  cat test-results/fuzz-ownership.txt
+  exit 1
+fi
 printf '%s\n' 'Building local binary'
 go build -trimpath -o bin/agentview ./cmd/agentview
 printf '%s\n' 'CI passed. Reports: test-results/{unit,integration}.jsonl, coverage.txt, fuzz.txt'

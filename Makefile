@@ -17,6 +17,13 @@ check: ci
 ci:
 	sh scripts/ci.sh
 
+.PHONY: browser release
+browser: build
+	npm run test:e2e
+
+release:
+	sh scripts/release.sh $(if $(VERSION),$(VERSION),dev)
+
 # Explicitly opt-in: these launch two turns using the installed CLI and its login.
 native-codex: build
 	go run ./tools/native-smoke --agent codex --agentview bin/agentview

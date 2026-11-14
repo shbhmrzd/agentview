@@ -1,0 +1,11 @@
+{"type":"custom-title","sessionId":"fixture-claude","customTitle":"PRIVATE_FIXTURE native title"}
+{"type":"assistant","sessionId":"fixture-claude","message":{"content":[{"type":"tool_use","id":"task-1","name":"Agent","input":{"prompt":"PRIVATE_FIXTURE review the tests"}}]}}
+{"type":"user","sessionId":"fixture-claude","toolUseResult":{"agentId":"fixture-child","status":"async_launched"},"message":{"content":[{"type":"tool_result","tool_use_id":"task-1","is_error":false,"content":"PRIVATE_FIXTURE child launched"}]}}
+{"type":"cost-state","sessionId":"fixture-claude","totalCostUSD":0.25,"totalAPIDuration":4000,"totalAPIDurationWithoutRetries":3000,"totalToolDuration":1200}
+{"type":"system","subtype":"stop_hook_summary","sessionId":"fixture-claude","hookErrors":["PRIVATE_FIXTURE hook failure"],"preventedContinuation":true}
+{"type":"system","subtype":"api_error","sessionId":"fixture-claude","error":{"message":"PRIVATE_FIXTURE retryable error"},"retryAttempt":1}
+{"type":"system","subtype":"compact_boundary","sessionId":"fixture-claude","content":"PRIVATE_FIXTURE compaction","compactMetadata":{"trigger":"auto","preTokens":120000},"postTokens":30000}
+{"type":"assistant","sessionId":"fixture-claude","message":{"content":[{"type":"tool_use","id":"error-string","name":"Bash","input":{"command":"synthetic command"}}]}}
+{"type":"user","sessionId":"fixture-claude","toolUseResult":"PRIVATE_FIXTURE failed command","message":{"content":[{"type":"tool_result","tool_use_id":"error-string","is_error":true,"content":"PRIVATE_FIXTURE tool response"}]}}
+{"type":"assistant","sessionId":"fixture-claude","message":{"content":[{"type":"tool_use","id":"result-array","name":"Bash","input":{"command":"synthetic command"}}]}}
+{"type":"user","sessionId":"fixture-claude","toolUseResult":[{"type":"text","text":"PRIVATE_FIXTURE success"}],"message":{"content":[{"type":"tool_result","tool_use_id":"result-array","is_error":false,"content":"PRIVATE_FIXTURE tool response"}]}}

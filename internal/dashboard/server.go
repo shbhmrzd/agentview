@@ -32,11 +32,14 @@ type Options struct {
 }
 
 type Server struct {
-	Store        *Store
-	options      Options
-	token        string
-	authority    string
-	historySlots chan struct{}
+	evidenceBudget *observe.EvidenceBudget
+	Store          *Store
+	options        Options
+	token          string
+	authority      string
+	historySlots   chan struct{}
+	historyMu      sync.Mutex
+	histories      map[string]*historyRead
 }
 
 func NewServer(options Options, authority string) (*Server, error) {
@@ -67,7 +70,21 @@ func NewServer(options Options, authority string) (*Server, error) {
 	if _, err := rand.Read(secret); err != nil {
 		return nil, err
 	}
-	return &Server{Store: NewStore(options.IncludeContent), options: options, token: hex.EncodeToString(secret), authority: authority, historySlots: make(chan struct{}, 2)}, nil
+	return &Server{evidenceBudget: observe.NewEvidenceBudget(64 * 1024 * 1024), Store: NewStore(options.IncludeContent), options: options, token: hex.EncodeToString(secret), authority: authority, historySlots: make(chan struct{}, 2)}, nil
+}
+
+// Close releases idle reader evidence after request handling has stopped.
+func (s *Server) Close() {
+	s.historyMu.Lock()
+	readers := s.histories
+	s.histories = nil
+	for _, h := range readers {
+		h.retired.Store(true)
+	}
+	s.historyMu.Unlock()
+	for _, h := range readers {
+		closeHistory(h)
+	}
 }
 
 func (s *Server) URL() string { return "http://" + s.authority + "/#token=" + s.token }
@@ -82,7 +99,7 @@ func (s *Server) Watch(ctx context.Context) {
 			defer wg.Done()
 			root.Status = "indexing"
 			s.Store.SetRoot(root)
-			directory, err := observe.NewDirectory(observe.DirectoryOptions{Agent: root.Agent, Root: root.Path, History: "all", Normalizer: observe.NormalizerOptions{IncludeContent: s.options.IncludeContent}, MaxRecordBytes: s.options.MaxRecordBytes})
+			directory, err := observe.NewDirectory(observe.DirectoryOptions{Agent: root.Agent, Root: root.Path, History: "all", Normalizer: observe.NormalizerOptions{IncludeContent: s.options.IncludeContent, EvidenceBudget: s.evidenceBudget}, MaxRecordBytes: s.options.MaxRecordBytes})
 			if err == nil {
 				err = directory.Run(ctx, s.options.Poll, func(e observe.Event) error { s.Store.Apply(e); return ctx.Err() })
 			}
@@ -155,13 +172,17 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, tree)
 		return
 	}
-	if r.URL.Path != "/api/session" && r.URL.Path != "/api/history" {
+	if r.URL.Path != "/api/session" && r.URL.Path != "/api/history" && r.URL.Path != "/api/export" {
 		http.NotFound(w, r)
 		return
 	}
 	session, entries, ok := s.Store.Session(r.URL.Query().Get("id"))
 	if !ok {
 		http.NotFound(w, r)
+		return
+	}
+	if r.URL.Path == "/api/export" {
+		s.export(w, r, session)
 		return
 	}
 	if r.URL.Path == "/api/session" {
@@ -171,50 +192,7 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		}{session, entries})
 		return
 	}
-	select {
-	case s.historySlots <- struct{}{}:
-		defer func() { <-s.historySlots }()
-	default:
-		http.Error(w, "History reader is busy; try again shortly.", http.StatusTooManyRequests)
-		return
-	}
-	var rootPath string
-	for _, root := range s.options.Roots {
-		if root.Agent == session.Agent {
-			rootPath = root.Path
-			break
-		}
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-	defer cancel()
-	result := struct {
-		Events      []Entry `json:"events"`
-		Limited     bool    `json:"limited"`
-		Dropped     int     `json:"dropped"`
-		Diagnostics int     `json:"diagnostics"`
-		ReadAt      string  `json:"read_at"`
-	}{Events: []Entry{}, ReadAt: time.Now().UTC().Format(time.RFC3339Nano)}
-	metrics := Metrics{}
-	limited, err := observe.ReadHistory(ctx, rootPath, session.Path, session.Agent, observe.NormalizerOptions{IncludeContent: s.options.IncludeContent}, s.options.MaxRecordBytes, 64*1024*1024, func(e observe.Event) {
-		duration := metrics.apply(e)
-		if entry, ok := displayEvent(e); ok {
-			entry.DurationMS = duration
-			result.Events = append(result.Events, entry)
-			if len(result.Events) > 200 {
-				result.Events[0] = Entry{}
-				result.Events = result.Events[1:]
-				result.Dropped++
-			}
-		} else if strings.HasPrefix(e.Kind, "record.") && e.Kind != "record.ignored" {
-			result.Diagnostics++
-		}
-	})
-	if err != nil {
-		http.Error(w, "History could not be read: "+err.Error(), http.StatusServiceUnavailable)
-		return
-	}
-	result.Limited = limited
-	writeJSON(w, result)
+	s.history(w, r, session)
 }
 
 // Serve binds only to an explicit loopback IP. Port zero is useful in tests.
@@ -257,6 +235,7 @@ func Serve(ctx context.Context, address string, options Options, out io.Writer) 
 	cancel()
 	<-watchDone
 	<-shutdownDone
+	view.Close()
 	if err == http.ErrServerClosed {
 		return nil
 	}

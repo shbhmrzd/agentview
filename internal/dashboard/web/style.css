@@ -1232,3 +1232,7 @@ dialog { background: var(--surface); }
 .tree-body { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px 16px; }
 .tree-inspect { flex: 1; margin: 0; min-width: 150px; }
 .tree-inspect[open], .tree-caution { flex-basis: 100%; }
+
+.trace-filters { flex-wrap: wrap; }
+.trace-filters .agent-node { white-space: nowrap; }
+button[aria-disabled="true"] { opacity: .6; cursor: wait; }

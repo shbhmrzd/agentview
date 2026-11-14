@@ -68,9 +68,13 @@ func (n *decoderState) message(base Event, raw json.RawMessage, role string) []E
 		case "tool_result":
 			e.Kind = "tool.result"
 			e.ToolCallID, e.IsError = block.ToolUseID, block.IsError
+			e.Outcome = flagOutcome(block.IsError)
 			n.content(&e, rawText(block.Content))
 		case "thinking", "redacted_thinking", "reasoning":
 			e = ignored(e)
+		case "encrypted_content":
+			e = ignored(e)
+			e.Detail = "Encrypted content is unreadable and intentionally omitted."
 		default:
 			e = unsupported(e)
 		}

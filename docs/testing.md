@@ -6,7 +6,7 @@ Run the deterministic suite from the repository root:
 make ci
 ```
 
-This invokes `scripts/ci.sh`: formatting checks, `go vet`, race-instrumented unit and CLI tests, process integration tests, bounded parser fuzzing, and a build. It requires Go (the module selects Go 1.26.10) and Node.js 20+, and makes no model calls. In restricted environments, use a writable cache such as `GOCACHE=/private/tmp/agentview-go-cache make ci`.
+This invokes `scripts/ci.sh`: formatting checks, `go vet`, race-instrumented unit and CLI tests, process integration tests, bounded parser and stateful ownership fuzzing, and a build. It requires Go (the module selects Go 1.26.10) and Node.js 20+, and makes no model calls. In restricted environments, use a writable cache such as `GOCACHE=/private/tmp/agentview-go-cache make ci`.
 
 ## Test layers
 
@@ -14,7 +14,7 @@ This invokes `scripts/ci.sh`: formatting checks, `go vet`, race-instrumented uni
 - Seventeen process integration scenarios exercise the built CLI against independent synthetic writers: nine JSONL cases across Claude, Codex, and Copilot, two Rovo snapshot cases, four Claude/Codex directory cases, and two authenticated dashboard HTTP cases. They cover append/replacement, incomplete input, recovery, source integrity, and the writer continuing after AgentView exits. Directory cases additionally cover new nested directories, simultaneous new and resumed sessions, startup-history policy, per-source context, and finite reinspection. Unit tests cover frozen discovery boundaries, incomplete-tail memory, symlink replacement, fair scheduling, visible coverage limits, and compact terminal output. See the [integration suite](../tests/integration/README.md).
 - Browser view-model tests use Node’s built-in test runner to verify time/provider/text filters, activity expiry and disconnection, tour-dismissal storage, safe wrapper formatting, bounded relationship traversal, ambiguous-recipient handling, and coordination filtering. Dashboard Go tests cover API authorization, history limits, source integrity, snapshot accounting, source-generation isolation, and the distinction between history/file discovery and newly appended conversation activity. Process tests verify that distinction for both Claude and Codex through the authenticated HTTP API.
 - Theme tests cover startup choice, persistence, operating-system fallback, cross-tab updates, blocked storage, palette completeness, and common text contrast pairs. Tree tests cover provider isolation, missing/ambiguous parents, cycles, response limits, inherited-message exclusion, UTF-8 excerpt limits, generation resets, and metadata-only privacy. Both provider process cases also fetch the family endpoint.
-- Parser fuzzing runs for ten seconds by default; set `FUZZ_TIME` to change the sample duration. This is bounded sampling, not proof against all malformed input.
+- Each fuzz target runs for ten seconds by default; set `FUZZ_TIME` to change the sample duration. This is bounded sampling, not proof against all malformed input.
 
 Use `make test`, `make integration`, or `make fuzz` to run a layer independently. Reports go to ignored `test-results/`. Statement coverage excludes separately built subprocesses and is not a completeness score. Fixtures are [original synthetic records](../testdata/README.md).
 
@@ -33,4 +33,26 @@ The harness identifies only its newly created session, observes its seed respons
 
 Logs can contain native metadata and remain private. Native test sessions remain in the provider's store; the harness does not delete shared history or copy credentials. Missing authentication, unsupported storage, policy blocks, and native failures are not compatibility passes. The [README](../README.md) distinguishes native-tested and fixture-tested adapters.
 
-GitHub Actions is not configured yet. `make ci` is the existing entry point for a future workflow; native calls require a separate opt-in environment.
+GitHub Actions runs `make ci` and the Playwright suite on macOS and Linux for pull requests and main pushes. Native model calls remain opt-in. The tag release workflow waits for both platforms, builds four macOS/Linux archives with checksums, and creates a draft GitHub release.
+
+## Browser integration tests
+
+```sh
+npm ci
+npx playwright install chromium
+make browser
+```
+
+Playwright launches the built binary on an ephemeral loopback port against disposable fixtures, never the user’s agent directories. It verifies failure evidence and paired payloads, child navigation through native task paths, history pagination and failed-page recovery, keyboard focus and notice persistence across polling, live appends, unknown timestamps, tour/theme controls, and a redacted download. Reports and failure traces stay under ignored `test-results/`. On Linux CI, `npx playwright install --with-deps chromium` installs the browser’s system dependencies. A sandbox that blocks browser launch or local listeners must allow those operations for this suite.
+
+`testdata/native-shapes` contains hand-authored records matching locally observed field layouts. Regression tests assert specific semantic evidence and metadata-only privacy, not just an aggregate unsupported percentage. These fixtures are not proof of compatibility with every provider version.
+
+## Release verification
+
+Run `make release VERSION=dev` to create macOS/Linux amd64 and arm64 `.tar.gz` archives and SHA-256 checksums in ignored `dist/`. This requires Python 3 and tar in addition to Go. Archives contain only the executable, README and MIT license. `agentview version` identifies the build. A `v…` tag triggers verification and a draft release; publishing that draft remains a maintainer action. Cross-compilation alone does not establish runtime validation on every architecture.
+
+Release archives currently have SHA-256 checksums, but no artifact attestations or platform code signing. Those are release hardening work, separate from parser and UI correctness.
+
+Stabilization regressions combine inheritance with oversized records/history modes, optional metadata with valid tool failures, duplicate IDs with cache eviction, request allocation ownership with a shared multi-reader budget, and failure totals across tools/API/hooks. Browser tests also exercise real source disappearance and cursor invalidation, spawn/payload expansion across inventory updates, a recovered live-fetch error, keyboard focus during delayed pagination, and a late failure → full request → result → following reply workflow. These are synthetic reproducible cases; they do not establish compatibility with every native provider version.
+
+For an isolated correlation-retention measurement, run `go test ./internal/observe -run '^$' -bench '^BenchmarkSharedCorrelationRetention$' -benchtime=1x -benchmem`. It creates 256 readers with 128 pending calls each under a shared 64 MiB accounting budget and reports retained heap separately from charged bytes. This measures that component only; it is not a whole-dashboard memory limit or long-lived workspace benchmark.
