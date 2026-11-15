@@ -1,19 +1,41 @@
 # AgentView
 
-A local browser for investigating coding-agent sessions: inspect tool failures, follow delegated work, and trace each observation back to its source. It reads a selected file or discovers files beneath an explicitly selected session directory. It does not launch, resume, interrupt, or configure agents.
-
-Release archives currently have SHA-256 checksums, but are unsigned and do not include artifact attestations.
+A local browser for investigating coding-agent sessions: inspect tool failures, follow delegated work, and trace each observation back to its source. Attach to existing Claude Code and Codex transcripts, including sessions that started before AgentView. No agent-side SDK or instrumentation is required for the supported file formats.
 
 **Status: local browser preview.** Browse Claude Code and Codex sessions, navigate recorded agent relationships, inspect history or live activity, and examine available token and tool metrics. CLI inspection also supports experimental Copilot and Rovo adapters. There is no durable history or agent-control API.
 
+AgentView is useful when a long transcript makes it hard to connect a command to its result, a child agent's work, or the parent's next reply. It suits developers debugging their own agent-assisted work and maintainers investigating supported transcript formats. Everything runs locally; AgentView reads files and leaves the agent processes independent.
+
+![AgentView showing a failed test result, its matched input payload, and links to the full request and following reply.](docs/images/debugging-failure.png)
+
+*Bundled synthetic demo: inspect the failed command and its input without running an agent or making a model call.*
+
+## What can I debug?
+
+| Your question | Start here | Evidence you can inspect |
+|---|---|---|
+| “Did that test or tool call fail?” | History → Failures → Search session | Supported failure flags/exit codes, input payload, result and following reply |
+| “Why was this child spawned?” | Agent tree → child → Inspect messages & provenance | Recorded spawn instructions/result, linked child trace and reply excerpts |
+| “Which session is receiving updates?” | New activity (2 min) → Live activity | Newly observed messages and tool events, including child-source activity |
+| “Why is the agent repeating work?” | Tools or Context changes → Search session | Repeated requests/results and supported compaction markers to investigate |
+| “How do I report a confusing trace?” | Record provenance → Export redacted evidence | Source positions and structural evidence with payloads and paths omitted |
+
+AgentView exposes recorded evidence. It cannot establish process liveness, whether a child reply was actually used, or overall task correctness. Missing records and unsupported formats remain gaps. See the [debugging walkthroughs](docs/debugging.md) for practical steps and how to interpret each result.
+
 ## Open the dashboard
 
+From source on macOS or Linux, with Git, Make and Go 1.24+ installed (the module selects Go 1.26.10 automatically):
+
 ```sh
+git clone https://github.com/shbhmrzd/agentview.git
+cd agentview
 make build
 ./bin/agentview serve --include-content
 ```
 
 Open the complete local URL printed in the terminal. It contains a per-launch access token. The dashboard discovers `${CODEX_HOME:-$HOME/.codex}/sessions` and `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects`. New sessions appear automatically.
+
+`--include-content` lets you read messages and tool payloads locally; it is not redaction. Omit it for metadata only. AgentView does not upload your transcripts or run commands found in them.
 
 Choose **New activity (2 min)** to find sessions with newly observed messages, tools, or turn events. A skippable first-visit tour explains the navigation; **Take a tour** reopens it later.
 
@@ -34,6 +56,26 @@ Use `--agent codex` or `--agent claude` to select one provider. For a custom roo
 ```
 
 Without `--include-content`, the dashboard shows metadata only. Ctrl-C stops the local observer and leaves agents alone. File activity is not proof of a running process. Accuracy and billing cost stay unavailable without appropriate evidence. See the [dashboard guide](docs/dashboard.md) for metric semantics, privacy, limits, and coverage.
+
+## Walk through a failed test
+
+1. Select a conversation and the agent that ran the command, then open **History**.
+2. Select **Failures** and click **Search session** to search beyond the displayed page. Searches cover the selected source; inspect a child's source separately when needed.
+3. Expand the result and **Matched input payload**. Compare the actual arguments, output and recorded outcome. **Open full request** retrieves input beyond the carried excerpt; **Find result** returns to the result.
+4. Use **Find following reply** to read what the assistant said next. Chronological proximity does not prove it used or understood the result.
+5. Open **Record provenance** when you need the native record type, call ID or byte range. **Clear session search** returns to chronological history.
+
+### Try it without an agent account
+
+After building, run this instead of the normal `serve` command:
+
+```sh
+./bin/agentview serve --agent codex \
+  --dir "$PWD/testdata/debugging-demo" \
+  --include-content --listen 127.0.0.1:0
+```
+
+Open the printed URL, choose **All history**, and select **Investigate the failing discount test…**. The bundled example contains a failed test, a delegated reviewer, and the parent's follow-up. It reads only [synthetic files](testdata/debugging-demo/README.md); no commands execute and no model is called. Follow the [demo walkthrough](docs/debugging.md#try-the-demo) to inspect the failure and child task. The first-visit tour and **Payload guide** are also available.
 
 ## Run the experiment
 
@@ -135,6 +177,8 @@ make release VERSION=dev  # local archives and checksums in dist/
 ```
 
 Routine tests use isolated fixtures, make no model calls, and do not touch live agent stores. Go's standard `testing` framework supplies shared adapter conformance tests, 17 subprocess integration scenarios, race detection, coverage, and fuzzing. Node’s built-in test runner checks browser view-model behavior. Reports go to ignored `test-results/`; GitHub Actions runs `make ci` plus Playwright browser tests on macOS and Linux. Tagged releases produce four architecture-specific archives, checksums, and a draft release after verification. In a restricted workspace, use a writable cache, for example `GOCACHE=/private/tmp/agentview-go-cache make ci`.
+
+Release archives produced by the packaging workflow have SHA-256 checksums, but are unsigned and do not include artifact attestations. The preview quickstart above builds from source.
 
 Native compatibility is a separate opt-in check:
 
